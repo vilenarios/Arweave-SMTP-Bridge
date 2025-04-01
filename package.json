@@ -1,0 +1,37 @@
+{
+  "name": "arweave-smtp-bridge",
+  "module": "index.ts",
+  "type": "module",
+  "version": "0.1.0",
+  "description": "An email-based bridge that automatically uploads attachments to Arweave using Turbo",
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun --watch index.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/imap": "^0.8.42",
+    "@types/mailparser": "^3.4.5",
+    "@types/node": "^22.13.17",
+    "@types/nodemailer": "^6.4.17",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@ardrive/turbo-sdk": "^1.23.1",
+    "dotenv": "^16.4.7",
+    "imap": "^0.8.19",
+    "mailparser": "^3.7.2",
+    "nodemailer": "^6.10.0"
+  },
+  "author": "",
+  "license": "MIT",
+  "keywords": [
+    "arweave",
+    "email",
+    "smtp",
+    "bridge",
+    "turbo",
+    "upload"
+  ]
+} 
