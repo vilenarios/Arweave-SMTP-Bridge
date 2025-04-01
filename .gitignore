@@ -37,4 +37,7 @@ Thumbs.db
 # Wallet files
 wallet.json
 *wallet*.json
-wall.json 
+wall.json
+
+# Documentation
+ardrive-sdk.md 
