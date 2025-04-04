@@ -1,12 +1,13 @@
 # Arweave SMTP Bridge
 
-An email-based bridge that automatically uploads attachments to Arweave using Turbo, then sends back a confirmation email with the transaction ID.
+An email-based bridge that automatically uploads attachments to Arweave, then sends back a confirmation email with the transaction ID and QR code for easy access.
 
 ## Features
 
 - Monitor an email inbox for new messages with attachments
-- Automatically upload attachments to Arweave network via Turbo
-- Send confirmation emails with transaction IDs
+- Automatically upload attachments to Arweave network via Turbo or Arweave.js
+- Send confirmation emails with transaction IDs and QR codes
+- Modern, sleek email templates
 - Handle errors and file size restrictions gracefully
 - Support for free tier uploads (up to 100MB)
 - Subject line filtering to prevent accidental uploads
@@ -47,6 +48,10 @@ An email-based bridge that automatically uploads attachments to Arweave using Tu
    
    # OR Option 2 (Recommended): Provide path to JWK file
    ARWEAVE_JWK_PATH=./path/to/your/wallet.json
+   
+   # Choose which Arweave SDK to use
+   # Options: 'turbo' or 'arweave-js'
+   ARWEAVE_SDK=turbo
    ```
 
 ## Usage
@@ -60,8 +65,8 @@ bun start
 The application will monitor your email inbox for new messages. When a message with an attachment is received:
 
 1. The subject line is checked for the keyword "arweave" (case insensitive)
-2. If the keyword is present, the attachment will be uploaded to Arweave via Turbo
-3. A confirmation email with the transaction ID will be sent to the sender
+2. If the keyword is present, the attachment will be uploaded to Arweave using the configured SDK
+3. A confirmation email with the transaction ID and QR code will be sent to the sender
 4. The original email will be marked as read
 
 ## How to Use
@@ -69,7 +74,33 @@ The application will monitor your email inbox for new messages. When a message w
 1. Send an email with an attachment to the email address configured in the `.env` file
 2. **Important:** Include the word "arweave" in the subject line (e.g., "Please upload to arweave")
 3. The file will be automatically uploaded to Arweave 
-4. You'll receive a confirmation email with the transaction ID and a link to view the file
+4. You'll receive a confirmation email with the transaction ID, QR code, and a link to view the file
+
+## Arweave SDK Options
+
+The application supports two different SDKs for uploading files to Arweave:
+
+1. **Turbo (Default)** - Uses the `@ardrive/turbo-sdk`:
+   - Faster uploads through bundled transactions
+   - Simplified interface optimized for reliability
+   - More efficient for large numbers of uploads
+   - Good choice for most users
+
+2. **Arweave.js** - Uses the standard `arweave` JavaScript SDK:
+   - Direct interaction with the Arweave blockchain
+   - More control over transaction details
+   - Support for detailed transaction customization
+   - Good for advanced users who need more control
+
+To select which SDK to use, set the `ARWEAVE_SDK` value in your `.env` file:
+
+```
+# For Turbo (default)
+ARWEAVE_SDK=turbo
+
+# For Arweave.js
+ARWEAVE_SDK=arweave-js
+```
 
 ## JWK Configuration
 
@@ -137,4 +168,5 @@ MIT
 ## Acknowledgments
 
 - ArDrive team for the Turbo SDK
+- Arweave team for the Arweave.js SDK
 - Arweave ecosystem for permanent storage 
