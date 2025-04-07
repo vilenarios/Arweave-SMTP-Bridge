@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@ardrive/turbo-sdk": "^1.23.1",
+    "ardrive-core-js": "^2.0.8",
     "arweave": "^1.15.7",
     "dotenv": "^16.4.7",
     "imap": "^0.8.19",

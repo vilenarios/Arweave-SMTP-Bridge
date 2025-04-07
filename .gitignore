@@ -41,3 +41,7 @@ wall.json
 
 # Documentation
 ardrive-sdk.md 
+
+# Data files
+tmp/
+user-store/
