@@ -10,9 +10,10 @@ const smtpTransport = createTransport({
   }
 });
 
-export async function sendConfirmationEmail(
+export async function sendArDriveConfirmationEmail(
   to: string,
   files: UploadedFileInfo[],
+  driveId: string,
   uploadType: 'turbo' | 'arweave-js' | 'ardrive'
 ) {
   try {
@@ -28,11 +29,12 @@ export async function sendConfirmationEmail(
       ''
     ];
     const htmlBlocks: string[] = [];
+    const driveLink = `https://ardrive.net/#/drives/${driveId}`
 
     for (const file of files) {
-      const previewLink = `https://arweave.net/${file.dataTxId ?? file.id}`;
+      const previewLink = `https://ardrive.net/${file.dataTxId ?? file.id}`;
       const shareLink = `https://ardrive.net/#/file/${file.id}/view`;
-      const qrCode = await QRCode.toDataURL(shareLink);
+
 
       // Plaintext fallback
       textLines.push(`File: ${file.fileName}`);
@@ -58,15 +60,6 @@ export async function sendConfirmationEmail(
                 : ''
             }
           </div>
-
-          <div style="text-align: center; margin-top: 15px;">
-            <img src="${qrCode}" alt="QR Code for ${file.fileName}" style="width: 160px; height: 160px;" />
-            <p style="color: #666; font-size: 13px;">Scan to open sharing link</p>
-          </div>
-
-          <div style="text-align: center; margin-top: 15px;">
-            <a href="${previewLink}" style="background-color: #000; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: 500;">Open File</a>
-          </div>
         </div>
       `);
     }
@@ -77,8 +70,10 @@ export async function sendConfirmationEmail(
           <h1 style="color: #000; font-weight: 300; margin: 0; font-size: 28px;">Upload Successful</h1>
           <p style="color: #666; margin-top: 8px; font-size: 16px;">Your file${files.length > 1 ? 's have' : ' has'} been stored using ${uploadTypeName}</p>
         </div>
-
-        ${htmlBlocks.join('')}
+        
+          <div style="text-align: center; margin-top: 15px;">
+            <a href="${driveLink}" style="background-color: #000; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: 500;">Open Drive</a>
+          </div>
 
         <p style="color: #999; font-size: 13px; text-align: center; margin-top: 25px;">Thank you for using ForwARd by ArDrive</p>
       </div>
@@ -95,6 +90,56 @@ export async function sendConfirmationEmail(
     console.log(`✅ Confirmation email sent to ${to}`);
   } catch (error) {
     console.error('❌ Error sending confirmation email:', error);
+  }
+}
+
+export async function sendConfirmationEmail(to: string, txId: string, uploadType: string, fileName: string) {
+  try {
+    // Generate QR code for the transaction
+    const qrCodeDataUrl = await QRCode.toDataURL(`https://arweave.net/${txId}`);
+    
+    // Get upload type friendly name
+    const uploadTypeName = uploadType === 'turbo' ? 'ArDrive Turbo' : 'Arweave.js';
+    
+    await smtpTransport.sendMail({
+      from: process.env.EMAIL_USER,
+      to,
+      subject: `Arweave Upload Confirmation: ${fileName}`,
+      text: `Your file "${fileName}" was successfully uploaded to Arweave!\n\nTransaction ID: ${txId}\n\nUpload method: ${uploadTypeName}\n\nView: https://arweave.net/${txId}\n\nThank you for using Arweave SMTP Bridge.`,
+      html: `
+        <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; color: #333;">
+          <div style="text-align: center; margin-bottom: 30px;">
+            <h1 style="color: #000; font-weight: 300; margin: 0; font-size: 28px;">Upload Successful</h1>
+            <p style="color: #666; margin-top: 8px; font-size: 16px;">Your file has been permanently stored on Arweave</p>
+          </div>
+          
+          <div style="background-color: #fff; border-radius: 8px; padding: 25px; box-shadow: 0 2px 10px rgba(0,0,0,0.05);">
+            <p style="font-size: 16px; margin-bottom: 20px;">Your file <strong>${fileName}</strong> was successfully uploaded.</p>
+            
+            <div style="background-color: #f7f9fc; padding: 15px; border-radius: 8px; margin: 15px 0; font-family: monospace; overflow-wrap: break-word;">
+              <p style="margin: 0; font-size: 14px;"><strong>Transaction ID:</strong> ${txId}</p>
+              <p style="margin: 8px 0 0 0; font-size: 14px; color: #666;"><strong>Upload method:</strong> ${uploadTypeName}</p>
+            </div>
+            
+            <div style="display: flex; flex-direction: column; align-items: center; margin: 25px 0;">
+              <img src="${qrCodeDataUrl}" alt="QR Code for Transaction" style="width: 180px; height: 180px; margin-bottom: 10px;">
+              <p style="color: #666; font-size: 14px; margin: 5px 0 0 0;">Scan to view your file</p>
+            </div>
+            
+            <div style="text-align: center; margin-top: 25px;">
+              <a href="https://arweave.net/${txId}" style="background-color: #000; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: 500; letter-spacing: 0.5px;">
+                View File
+              </a>
+            </div>
+          </div>
+          
+          <p style="color: #999; font-size: 13px; text-align: center; margin-top: 25px;">Thank you for using Arweave SMTP Bridge.</p>
+        </div>
+      `
+    });
+    console.log(`Confirmation email sent to ${to}`);
+  } catch (error) {
+    console.error('Error sending confirmation email:', error);
   }
 }
   

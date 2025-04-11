@@ -8,7 +8,7 @@ const TEMP_DIR = process.env.FORWARD_TEMP_DIR || join(__dirname, '../../tmp');
 
 if (!existsSync(TEMP_DIR)) mkdirSync(TEMP_DIR);
 
-function sanitizeFilename(text: string) {
+export function sanitizeFilename(text: string) {
   return text.replace(/[^a-z0-9_\-\.]/gi, '_');
 }
 

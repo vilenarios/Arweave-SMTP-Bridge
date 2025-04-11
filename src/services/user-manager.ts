@@ -3,7 +3,6 @@ import Arweave from 'arweave';
 import { writeFileSync, existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { decrypt, encrypt, generatePrivateDrivePassword, hashEmail } from './crypto';
-import { ArweaveSigner, TurboFactory } from '@ardrive/turbo-sdk';
 
 const GQL_URL = 'https://arweave.net/graphql';
 const SYSTEM_SECRET = process.env.FORWARD_ENCRYPTION_SECRET || 'change-me';
@@ -74,7 +73,7 @@ export async function initUser(email: string, options: InitUserOptions = {}) {
 
         console.log(`[ForwARd] Main wallet ${mainAddress} balance: ${mainWalletBalance}`);
 
-        const APPROVED_AMOUNT = 0.01;
+        const APPROVED_AMOUNT = 10000000000;
         console.log(`[ForwARd] Sharing ${APPROVED_AMOUNT} Turbo credits to ${newAddress}`);
 
         const { approvalDataItemId } = await turbo.shareCredits({
