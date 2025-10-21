@@ -1,47 +1,51 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Dependency directories
+# Dependencies
 node_modules/
-jspm_packages/
+bun.lockb
 
-# TypeScript cache
-*.tsbuildinfo
-
-# Environment variables
+# Environment
 .env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*.local
 
-# Build output
+# Arweave wallet (CRITICAL - NEVER COMMIT)
+wallet.json
+*.jwk
+**/*wallet*.json
+
+# Database
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# Logs
+logs/
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# User data
+user-store/
+
+# Build outputs
 dist/
 build/
+*.tsbuildinfo
 
-# OS files
-.DS_Store
-**/.DS_Store
-Thumbs.db
-
-# IDE specific files
-.idea/
+# IDE
 .vscode/
+.idea/
 *.swp
-*.swo 
+*.swo
+*~
+.DS_Store
 
-# Wallet files
-wallet.json
-*wallet*.json
-wall.json
+# Testing
+coverage/
+.nyc_output/
 
-# Documentation
-ardrive-sdk.md 
-
-# Data files
-tmp/
-user-store/
+# OS
+Thumbs.db

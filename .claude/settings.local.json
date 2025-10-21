@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(bunx npm-check-updates:*)",
+      "Bash(bun remove:*)",
+      "Bash(bun add:*)",
+      "Bash(mkdir:*)",
+      "Bash(bun run:*)",
+      "Bash(node -e \"console.log(require(''crypto'').randomBytes(32).toString(''hex''))\")",
+      "Bash(timeout 10 bun run index.ts)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
