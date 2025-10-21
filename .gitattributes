@@ -1,0 +1,37 @@
+# Force LF line endings for all text files (Unix-style)
+# This ensures consistent behavior across Windows/Mac/Linux
+
+# Source code
+*.ts text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+
+# Config files
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.env text eol=lf
+*.env.example text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# SQL files
+*.sql text eol=lf
+
+# Shell scripts (must be LF for Linux)
+*.sh text eol=lf
+
+# Binary files (don't touch)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary

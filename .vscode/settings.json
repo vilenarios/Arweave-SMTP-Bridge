@@ -1,0 +1,32 @@
+{
+  // Use LF line endings (Unix-style) for consistency with Linux servers
+  "files.eol": "\n",
+
+  // Auto-format on save
+  "editor.formatOnSave": true,
+
+  // TypeScript settings
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+
+  // Exclude files from file watcher
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/data/**": true,
+    "**/logs/**": true,
+    "**/tmp/**": true,
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/dist/**": true,
+    "**/build/**": true
+  },
+
+  // Hide files from explorer
+  "files.exclude": {
+    "**/.git": true,
+    "**/node_modules": true,
+    "**/*.db": true,
+    "**/*.db-shm": true,
+    "**/*.db-wal": true
+  }
+}
