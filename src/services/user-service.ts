@@ -100,12 +100,15 @@ export async function getOrCreateUser(email: string): Promise<UserWithDrive> {
 export async function createPrivateDriveForUser(
   userId: string,
   driveId: string,
-  rootFolderId: string
+  rootFolderId: string,
+  drivePassword?: string,
+  driveKeyBase64?: string
 ): Promise<{ drivePassword: string }> {
   const db = await getDb();
 
-  const drivePassword = generateDrivePassword();
-  const encryptedPassword = encrypt(drivePassword);
+  // Use provided password or generate new one
+  const password = drivePassword || generateDrivePassword();
+  const encryptedPassword = encrypt(password);
 
   await db.insert(userDrives).values({
     userId,
@@ -113,11 +116,13 @@ export async function createPrivateDriveForUser(
     driveType: 'private',
     rootFolderId,
     drivePasswordEncrypted: encryptedPassword,
+    driveKeyBase64: driveKeyBase64 || null,
+    welcomeEmailSent: false,
   });
 
-  logger.info({ userId, driveId }, 'Created private drive for user');
+  logger.info({ userId, driveId, hasDriveKey: !!driveKeyBase64 }, 'Created private drive for user');
 
-  return { drivePassword };
+  return { drivePassword: password };
 }
 
 /**
@@ -160,4 +165,20 @@ export async function updateUserPlan(userId: string, plan: 'free' | 'paid', stri
     .where(eq(users.id, userId));
 
   logger.info({ userId, plan }, 'Updated user plan');
+}
+
+/**
+ * Mark welcome email as sent for user's drive
+ */
+export async function markWelcomeEmailSent(userId: string): Promise<void> {
+  const db = await getDb();
+
+  await db.update(userDrives)
+    .set({ welcomeEmailSent: true })
+    .where(and(
+      eq(userDrives.userId, userId),
+      eq(userDrives.driveType, 'private')
+    ));
+
+  logger.info({ userId }, 'Marked welcome email as sent');
 }

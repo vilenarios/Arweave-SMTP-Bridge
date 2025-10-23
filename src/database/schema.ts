@@ -28,6 +28,7 @@ export const uploads = sqliteTable('uploads', {
   entityId: text('entity_id'), // ArDrive file entity ID
   dataTxId: text('data_tx_id'), // Transaction ID on Arweave
   fileKey: text('file_key'), // For private uploads
+  emailFolderEntityId: text('email_folder_entity_id'), // Parent folder for this email's files
 
   errorMessage: text('error_message'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
@@ -85,6 +86,25 @@ export const userDrives = sqliteTable('user_drives', {
 
   // For private drives
   drivePasswordEncrypted: text('drive_password_encrypted'),
+  driveKeyBase64: text('drive_key_base64'), // Derived drive key for sharing URLs
+  welcomeEmailSent: integer('welcome_email_sent', { mode: 'boolean' }).notNull().default(false),
+
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+});
+
+// ArDrive folder cache (year/month folders to avoid recreating)
+export const driveFolders = sqliteTable('drive_folders', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+  driveId: text('drive_id').notNull(),
+
+  folderType: text('folder_type', { enum: ['year', 'month'] }).notNull(),
+  folderName: text('folder_name').notNull(), // e.g., "2025" or "01"
+  parentFolderId: text('parent_folder_id').notNull(), // Parent folder entity ID
+  folderEntityId: text('folder_entity_id').notNull(), // This folder's entity ID
+
+  year: integer('year').notNull(), // e.g., 2025
+  month: integer('month'), // e.g., 1 (only for month folders)
 
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 });
@@ -99,6 +119,12 @@ export const processedEmails = sqliteTable('processed_emails', {
 
   status: text('status', { enum: ['queued', 'processing', 'completed', 'failed'] }).notNull().default('queued'),
   errorMessage: text('error_message'),
+
+  // ArDrive folder and .eml file tracking
+  folderEntityId: text('folder_entity_id'), // Email folder in ArDrive (YYYY-MM-DD_HH-MM-SS_Subject)
+  emlFileEntityId: text('eml_file_entity_id'), // .eml file entity ID
+  emlFileKey: text('eml_file_key'), // File key for .eml (private files)
+  folderName: text('folder_name'), // Human-readable folder name
 
   queuedAt: integer('queued_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   processedAt: integer('processed_at', { mode: 'timestamp' }),
@@ -122,3 +148,6 @@ export type NewUserDrive = typeof userDrives.$inferInsert;
 
 export type ProcessedEmail = typeof processedEmails.$inferSelect;
 export type NewProcessedEmail = typeof processedEmails.$inferInsert;
+
+export type DriveFolder = typeof driveFolders.$inferSelect;
+export type NewDriveFolder = typeof driveFolders.$inferInsert;

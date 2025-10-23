@@ -7,7 +7,17 @@
       "Bash(mkdir:*)",
       "Bash(bun run:*)",
       "Bash(node -e \"console.log(require(''crypto'').randomBytes(32).toString(''hex''))\")",
-      "Bash(timeout 10 bun run index.ts)"
+      "Bash(timeout 10 bun run index.ts)",
+      "Bash(redis-cli ping:*)",
+      "Bash(test:*)",
+      "Bash(export PATH=\"$HOME/.bun/bin:$PATH\")",
+      "Bash(bun --version:*)",
+      "Bash(bun install:*)",
+      "Bash(sqlite3:*)",
+      "Bash(bun start)",
+      "Bash(redis-cli:*)",
+      "Bash(bunx drizzle-kit:*)",
+      "Bash(git add:*)"
     ],
     "deny": [],
     "ask": []

@@ -3,16 +3,17 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser, type ParsedMail } from 'mailparser';
 import { writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { join } from 'path';
-import { eq } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { config } from '../../config/env';
 import { createLogger } from '../../config/logger';
 import { getDb } from '../../database/db';
-import { processedEmails, uploads } from '../../database/schema';
-import { getOrCreateUser, getUserPrivateDrive, createPrivateDriveForUser } from '../../services/user-service';
+import { processedEmails, uploads, driveFolders } from '../../database/schema';
+import { getOrCreateUser, createPrivateDriveForUser, markWelcomeEmailSent } from '../../services/user-service';
 import { canUserUpload, recordUpload, getUsageSummary } from '../../services/usage-service';
-import { uploadFilesToArDrive } from '../../storage/ardrive-storage';
-import { sendUploadConfirmation, sendUsageLimitEmail } from '../../services/email-notification';
+import { uploadFilesToArDrive, createFolderInDrive, uploadFileToFolder, getDriveShareKey } from '../../storage/ardrive-storage';
+import { sendUploadConfirmation, sendUsageLimitEmail, sendDriveWelcomeEmail } from '../../services/email-notification';
 import { type EmailJobData } from '../queue';
+import { generateDrivePassword } from '../../utils/crypto';
 
 const logger = createLogger('email-processor');
 
@@ -21,6 +22,131 @@ interface SavedAttachment {
   filename: string;
   contentType: string;
   sizeBytes: number;
+}
+
+/**
+ * Helper: Sanitize folder/file name (remove special chars, limit length)
+ */
+function sanitizeName(name: string, maxLength: number = 50): string {
+  return name
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '') // Remove invalid chars
+    .replace(/\s+/g, '-') // Replace spaces with dashes
+    .substring(0, maxLength)
+    .replace(/^\.+/, '') // Remove leading dots
+    .trim() || 'unnamed';
+}
+
+/**
+ * Helper: Get or create year folder
+ */
+async function getOrCreateYearFolder(
+  userId: string,
+  driveId: string,
+  rootFolderId: string,
+  year: number,
+  drivePassword?: string
+): Promise<string> {
+  const db = await getDb();
+
+  // Check if year folder exists in cache
+  const existingFolder = await db.query.driveFolders.findFirst({
+    where: and(
+      eq(driveFolders.userId, userId),
+      eq(driveFolders.driveId, driveId),
+      eq(driveFolders.folderType, 'year'),
+      eq(driveFolders.year, year)
+    ),
+  });
+
+  if (existingFolder) {
+    logger.info({ year, folderId: existingFolder.folderEntityId }, 'Using cached year folder');
+    return existingFolder.folderEntityId;
+  }
+
+  // Create year folder
+  logger.info({ year }, 'Creating year folder');
+  const { folderId } = await createFolderInDrive(
+    driveId,
+    year.toString(),
+    rootFolderId,
+    drivePassword
+  );
+
+  // Save to cache
+  await db.insert(driveFolders).values({
+    userId,
+    driveId,
+    folderType: 'year',
+    folderName: year.toString(),
+    parentFolderId: rootFolderId,
+    folderEntityId: folderId,
+    year,
+    month: null,
+  });
+
+  // Wait for indexing
+  logger.info({ year, folderId }, 'Waiting 10s for year folder indexing');
+  await new Promise(resolve => setTimeout(resolve, 10000));
+
+  return folderId;
+}
+
+/**
+ * Helper: Get or create month folder
+ */
+async function getOrCreateMonthFolder(
+  userId: string,
+  driveId: string,
+  yearFolderId: string,
+  year: number,
+  month: number,
+  drivePassword?: string
+): Promise<string> {
+  const db = await getDb();
+
+  // Check if month folder exists in cache
+  const existingFolder = await db.query.driveFolders.findFirst({
+    where: and(
+      eq(driveFolders.userId, userId),
+      eq(driveFolders.driveId, driveId),
+      eq(driveFolders.folderType, 'month'),
+      eq(driveFolders.year, year),
+      eq(driveFolders.month, month)
+    ),
+  });
+
+  if (existingFolder) {
+    logger.info({ year, month, folderId: existingFolder.folderEntityId }, 'Using cached month folder');
+    return existingFolder.folderEntityId;
+  }
+
+  // Create month folder (format: "01", "02", etc.)
+  const monthStr = month.toString().padStart(2, '0');
+  logger.info({ year, month: monthStr }, 'Creating month folder');
+  const { folderId } = await createFolderInDrive(
+    driveId,
+    monthStr,
+    yearFolderId,
+    drivePassword
+  );
+
+  // Save to cache
+  await db.insert(driveFolders).values({
+    userId,
+    driveId,
+    folderType: 'month',
+    folderName: monthStr,
+    parentFolderId: yearFolderId,
+    folderEntityId: folderId,
+    year,
+    month,
+  });
+
+  // Wait for indexing
+  logger.info({ year, month: monthStr, folderId }, 'Waiting 10s for month folder indexing');
+  await new Promise(resolve => setTimeout(resolve, 10000));
+
+  return folderId;
 }
 
 export class EmailProcessor {
@@ -146,26 +272,29 @@ export class EmailProcessor {
       // 5. Get or create private drive for user
       let driveInfo = privateDrive;
       if (!driveInfo) {
-        // Create private drive on first upload
+        // Create private drive SEPARATELY from file upload
         logger.info({ userId: user.id }, 'Creating private drive...');
 
-        const { results, driveId, rootFolderId } = await uploadFilesToArDrive(
+        // Generate password BEFORE creating drive
+        const { generateDrivePassword } = await import('../../utils/crypto');
+        const drivePassword = generateDrivePassword();
+
+        // Create EMPTY drive first (no files)
+        const { driveId, rootFolderId } = await uploadFilesToArDrive(
           user.id,
-          attachments.map(a => ({
-            filepath: a.filepath,
-            filename: a.filename,
-            contentType: a.contentType,
-          })),
+          [], // NO FILES - just create the drive
           {
             driveName: `${user.email}-private`,
+            drivePassword, // Pass password to create PRIVATE drive
           }
         );
 
-        // Save drive info
-        const { drivePassword } = await createPrivateDriveForUser(
+        // Save drive info to database IMMEDIATELY
+        await createPrivateDriveForUser(
           user.id,
           driveId,
-          rootFolderId
+          rootFolderId,
+          drivePassword
         );
 
         driveInfo = {
@@ -179,73 +308,57 @@ export class EmailProcessor {
           drivePassword, // Decrypted password
         };
 
-        logger.info({ userId: user.id, driveId }, 'Private drive created');
+        logger.info({ userId: user.id, driveId, rootFolderId }, 'Private drive created and saved');
 
-        // Record uploads
-        for (let i = 0; i < results.length; i++) {
-          const result = results[i];
-          const attachment = attachments[i];
-
-          await db.insert(uploads).values({
-            userId: user.id,
-            emailMessageId: email.messageId || null,
-            fileName: result.fileName,
-            sizeBytes: attachment.sizeBytes,
-            contentType: attachment.contentType,
-            status: 'completed',
-            driveId,
-            entityId: result.entityId,
-            dataTxId: result.dataTxId || null,
-            fileKey: result.fileKey || null,
-            completedAt: new Date(),
-          });
-
-          // Record usage
-          await recordUpload(user.id, attachment.sizeBytes);
-        }
-      } else {
-        // Upload to existing drive
-        const { results } = await uploadFilesToArDrive(
-          user.id,
-          attachments.map(a => ({
-            filepath: a.filepath,
-            filename: a.filename,
-            contentType: a.contentType,
-          })),
-          {
-            driveId: driveInfo.driveId,
-            rootFolderId: driveInfo.rootFolderId,
-            drivePassword: driveInfo.drivePassword,
-          }
-        );
-
-        logger.info({ userId: user.id, count: results.length }, 'Files uploaded to ArDrive');
-
-        // Record uploads
-        for (let i = 0; i < results.length; i++) {
-          const result = results[i];
-          const attachment = attachments[i];
-
-          await db.insert(uploads).values({
-            userId: user.id,
-            emailMessageId: email.messageId || null,
-            fileName: result.fileName,
-            sizeBytes: attachment.sizeBytes,
-            contentType: attachment.contentType,
-            status: 'completed',
-            driveId: driveInfo.driveId,
-            entityId: result.entityId,
-            dataTxId: result.dataTxId || null,
-            fileKey: result.fileKey || null,
-            completedAt: new Date(),
-          });
-
-          // Record usage
-          await recordUpload(user.id, attachment.sizeBytes);
-        }
+        // Wait for ArDrive to index the new drive/folder before uploading files
+        logger.info({ userId: user.id, driveId }, 'Waiting 10 seconds for drive indexing...');
+        await new Promise(resolve => setTimeout(resolve, 10000));
+        logger.info({ userId: user.id, driveId }, 'Drive indexing wait complete');
       }
 
-      // 6. Get upload results for confirmation email
+      // 6. Now upload files to the EXISTING drive
+      logger.info({ userId: user.id, driveId: driveInfo.driveId, fileCount: attachments.length }, 'Uploading files to existing drive');
+
+      const { results } = await uploadFilesToArDrive(
+        user.id,
+        attachments.map(a => ({
+          filepath: a.filepath,
+          filename: a.filename,
+          contentType: a.contentType,
+        })),
+        {
+          driveId: driveInfo.driveId,
+          rootFolderId: driveInfo.rootFolderId,
+          drivePassword: driveInfo.drivePassword,
+        }
+      );
+
+      logger.info({ userId: user.id, uploadCount: results.length }, 'Files uploaded to ArDrive');
+
+      // 7. Record uploads in database
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        const attachment = attachments[i];
+
+        await db.insert(uploads).values({
+          userId: user.id,
+          emailMessageId: email.messageId || null,
+          fileName: result.fileName,
+          sizeBytes: attachment.sizeBytes,
+          contentType: attachment.contentType,
+          status: 'completed',
+          driveId: driveInfo.driveId,
+          entityId: result.entityId,
+          dataTxId: result.dataTxId || null,
+          fileKey: result.fileKey || null,
+          completedAt: new Date(),
+        });
+
+        // Record usage
+        await recordUpload(user.id, attachment.sizeBytes);
+      }
+
+      // 8. Get upload results for confirmation email
       const uploadResults = await db.query.uploads.findMany({
         where: eq(uploads.emailMessageId, email.messageId || ''),
         orderBy: (uploads, { desc }) => [desc(uploads.createdAt)],
