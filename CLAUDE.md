@@ -426,52 +426,21 @@ const result = await uploadFilesToArDrive('user-id', [
 
 13. **.eml Size Limit**: Max 1GB per email (Turbo supports up to 10GB, but we limit for practical reasons)
 
-### Legacy Code (To Be Removed)
 
-**Currently in use but should be refactored/removed:**
-- `src/services/email-upload.ts` - Old monolithic email processor (not used by current flow)
-- `src/services/arweave-upload.ts` - Legacy Turbo/Arweave.js upload (replaced by ardrive-storage.ts)
-- `src/services/ardrive-upload.ts` - Old ArDrive v2 code (replaced by ardrive-storage.ts)
-- `src/services/user-manager.ts` - Old user management with broken GraphQL (replaced by user-service.ts)
-- `src/services/crypto.ts` - Duplicate crypto utils (use `src/utils/crypto.ts` instead)
-
-**Archived (not in use):**
-- `archive/index_og.ts` - Original implementation
-- `archive/index_broken.ts` - Broken experimental implementation
-- `archive/index_cron.ts` - Cron-based polling attempt
-- `archive/index_imapflow.ts` - Early ImapFlow experiment
-
-**Note**: The current production flow uses `email-processor.ts`, `imap-service.ts`, and `ardrive-storage.ts`. Legacy services above are NOT imported by `index.ts`.
-
-### Migration from Old Architecture
-
-**Old (v1)**:
-- JSON file for user storage (`user-store/users.json`)
-- Multiple upload methods (Turbo, Arweave.js, ArDrive)
-- No billing/usage tracking
-- Hardcoded secrets
-- No job queue
-- GraphQL syntax errors
-
-**New (v2)**:
-- SQLite database with proper schema
-- Single upload method (ArDrive v3 with Turbo)
-- Full billing/usage tracking
-- Validated configuration
-- Job queue for async processing
-- Fixed all critical bugs
 
 ### Testing Strategy
 
 - **Unit Tests**: Test services in isolation with mocked dependencies
-  - `src/services/__tests__/` - Contains existing tests for email-upload, qr-code, arweave-sdk-selector
+  - Create tests in `src/__tests__/` or `src/[module]/__tests__/`
   - Run with `bun test`
 - **Integration Tests**: Test with real SQLite database (in-memory or temp file)
   - Test user-service.ts with actual database operations
   - Test usage-service.ts billing calculations
+  - Test email-processor.ts with mocked IMAP/ArDrive calls
 - **E2E Tests**: Test full flow with test email account
   - Send test email → verify upload → check confirmation email
   - Requires: Redis, test email account, Arweave wallet with AR balance
+  - Verify hierarchical folder structure and .eml backup
   - See `TESTING.md` for detailed end-to-end testing guide
 
 ### Deployment (Home Server)

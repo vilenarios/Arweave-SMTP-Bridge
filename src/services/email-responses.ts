@@ -1,6 +1,13 @@
 import * as QRCode from 'qrcode';
 import { createTransport } from 'nodemailer';
-import { UploadedFileInfo } from './email-upload';
+import { TransactionID } from 'ardrive-core-js';
+
+export interface UploadedFileInfo {
+  id: string;
+  dataTxId?: TransactionID;
+  fileName: string;
+  fileKey?: string;
+}
 
 const smtpTransport = createTransport({
   service: 'gmail',
