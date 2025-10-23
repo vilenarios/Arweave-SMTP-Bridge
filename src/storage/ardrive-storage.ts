@@ -304,15 +304,19 @@ export async function getDriveShareKey(
 }
 
 /**
- * Upload a single file to a specific folder in ArDrive
+ * Upload multiple files to a specific folder in ArDrive using Turbo batching
+ * This is more efficient than uploading files one-by-one
  */
-export async function uploadFileToFolder(
+export async function uploadFilesToFolder(
   driveId: string,
   folderId: string,
-  filepath: string,
-  filename: string,
+  files: Array<{ filepath: string; filename: string }>,
   drivePassword?: string
-): Promise<UploadResult> {
+): Promise<UploadResult[]> {
+  if (files.length === 0) {
+    return [];
+  }
+
   const jwk = JSON.parse(readFileSync(config.ARWEAVE_JWK_PATH, 'utf-8'));
   const jwkWallet = new JWKWallet(jwk);
 
@@ -334,52 +338,89 @@ export async function uploadFileToFolder(
     );
   }
 
-  // Prepare file for upload
-  const resolvedPath = path.resolve(filepath);
-  const wrapped = await wrapFileOrFolder(resolvedPath);
+  // Prepare all files for batch upload
+  const entitiesToUpload: ArDriveUploadStats[] = [];
 
-  const entity: ArDriveUploadStats = {
-    wrappedEntity: wrapped,
-    destFolderId,
-    destName: filename,
-    ...(isPrivate && driveKey ? { driveKey } : {})
-  };
+  for (const file of files) {
+    const resolvedPath = path.resolve(file.filepath);
+    const wrapped = await wrapFileOrFolder(resolvedPath);
+
+    const entity: ArDriveUploadStats = {
+      wrappedEntity: wrapped,
+      destFolderId,
+      destName: file.filename,
+      ...(isPrivate && driveKey ? { driveKey } : {})
+    };
+
+    entitiesToUpload.push(entity);
+  }
 
   logger.info({
     driveId,
     folderId,
-    filename,
+    fileCount: files.length,
     isPrivate
-  }, 'Uploading file to folder');
+  }, 'Batch uploading files to folder');
 
-  // Upload file
+  // Upload ALL files in one Turbo transaction (bundled)
   const uploadResult = await arDrive.uploadAllEntities({
-    entitiesToUpload: [entity],
+    entitiesToUpload,
     conflictResolution: 'OVERWRITE' as FileNameConflictResolution
   });
 
   if (!uploadResult.created || uploadResult.created.length === 0) {
-    throw new Error('Upload succeeded but no entities were created');
+    throw new Error('Batch upload succeeded but no entities were created');
   }
 
-  // Extract file entity (first entity with entityId)
-  const fileEntity = uploadResult.created.find(e => e.entityId);
-  if (!fileEntity) {
-    throw new Error('Could not find file entity in upload result');
-  }
+  // Extract file entities
+  const results: UploadResult[] = [];
+  let fileIndex = 0;
 
-  const result: UploadResult = {
-    entityId: fileEntity.entityId.toString(),
-    dataTxId: fileEntity.dataTxId?.toString(),
-    fileKey: isPrivate ? fileEntity.key?.toString() : undefined,
-    fileName: filename
-  };
+  for (const entity of uploadResult.created) {
+    if (fileIndex >= files.length) break;
+
+    if (entity.entityId) {
+      results.push({
+        entityId: entity.entityId.toString(),
+        dataTxId: entity.dataTxId?.toString(),
+        fileKey: isPrivate ? entity.key?.toString() : undefined,
+        fileName: files[fileIndex]?.filename || 'unknown'
+      });
+      fileIndex++;
+    }
+  }
 
   logger.info({
-    entityId: result.entityId,
-    dataTxId: result.dataTxId,
-    hasFileKey: !!result.fileKey
-  }, 'File uploaded successfully');
+    uploadedCount: results.length,
+    driveId,
+    folderId
+  }, 'Batch upload complete');
 
-  return result;
+  return results;
+}
+
+/**
+ * Upload a single file to a specific folder in ArDrive
+ * NOTE: For multiple files, use uploadFilesToFolder for better Turbo batching
+ */
+export async function uploadFileToFolder(
+  driveId: string,
+  folderId: string,
+  filepath: string,
+  filename: string,
+  drivePassword?: string
+): Promise<UploadResult> {
+  // Use batch function with single file
+  const results = await uploadFilesToFolder(
+    driveId,
+    folderId,
+    [{ filepath, filename }],
+    drivePassword
+  );
+
+  if (results.length === 0) {
+    throw new Error('Upload failed - no results returned');
+  }
+
+  return results[0];
 }

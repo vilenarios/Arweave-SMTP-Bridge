@@ -17,7 +17,8 @@
       "Bash(bun start)",
       "Bash(redis-cli:*)",
       "Bash(bunx drizzle-kit:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(timeout 15 bun run:*)"
     ],
     "deny": [],
     "ask": []

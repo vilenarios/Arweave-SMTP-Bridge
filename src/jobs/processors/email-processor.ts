@@ -10,7 +10,7 @@ import { getDb } from '../../database/db';
 import { processedEmails, uploads, driveFolders } from '../../database/schema';
 import { getOrCreateUser, createPrivateDriveForUser, markWelcomeEmailSent } from '../../services/user-service';
 import { canUserUpload, recordUpload, getUsageSummary } from '../../services/usage-service';
-import { uploadFilesToArDrive, createFolderInDrive, uploadFileToFolder, getDriveShareKey } from '../../storage/ardrive-storage';
+import { uploadFilesToArDrive, createFolderInDrive, uploadFilesToFolder, getDriveShareKey } from '../../storage/ardrive-storage';
 import { sendUploadConfirmation, sendUsageLimitEmail, sendDriveWelcomeEmail } from '../../services/email-notification';
 import { type EmailJobData } from '../queue';
 import { generateDrivePassword } from '../../utils/crypto';
@@ -377,32 +377,60 @@ export class EmailProcessor {
       logger.info({ emailFolderId }, 'Email folder created, waiting 10s for indexing');
       await new Promise(resolve => setTimeout(resolve, 10000));
 
-      // 9. Upload .eml file to email folder
-      let emlUploadResult = null;
+      // 9. Batch upload .eml file + all attachments together (Turbo optimization)
+      const filesToUpload = [];
+
+      // Add .eml file to batch
       if (emlFile) {
-        logger.info({ filename: emlFile.filename }, 'Uploading .eml file');
-        emlUploadResult = await uploadFileToFolder(
-          driveInfo.driveId,
-          emailFolderId,
-          emlFile.filepath,
-          emlFile.filename,
-          driveInfo.drivePassword
-        );
-        logger.info({ entityId: emlUploadResult.entityId }, '.eml file uploaded');
+        filesToUpload.push({
+          filepath: emlFile.filepath,
+          filename: emlFile.filename
+        });
       }
 
-      // 10. Upload attachments to email folder
-      const attachmentResults = [];
+      // Add all attachments to batch
       for (const attachment of attachments) {
-        logger.info({ filename: attachment.filename }, 'Uploading attachment');
-        const result = await uploadFileToFolder(
-          driveInfo.driveId,
-          emailFolderId,
-          attachment.filepath,
-          attachment.filename,
-          driveInfo.drivePassword
-        );
-        attachmentResults.push({ ...result, sizeBytes: attachment.sizeBytes, contentType: attachment.contentType });
+        filesToUpload.push({
+          filepath: attachment.filepath,
+          filename: attachment.filename
+        });
+      }
+
+      // Upload ALL files in ONE Turbo transaction
+      logger.info({ fileCount: filesToUpload.length }, 'Batch uploading files to email folder');
+      const uploadResults = await uploadFilesToFolder(
+        driveInfo.driveId,
+        emailFolderId,
+        filesToUpload,
+        driveInfo.drivePassword
+      );
+      logger.info({ uploadedCount: uploadResults.length }, 'Batch upload complete');
+
+      // Separate .eml result from attachment results
+      let emlUploadResult = null;
+      const attachmentResults = [];
+
+      let resultIndex = 0;
+
+      if (emlFile) {
+        const emlResult = uploadResults[resultIndex++];
+        if (!emlResult) {
+          throw new Error('.eml file upload failed - no result returned');
+        }
+        emlUploadResult = emlResult;
+        logger.info({ entityId: emlResult.entityId }, '.eml file uploaded');
+      }
+
+      for (const attachment of attachments) {
+        const result = uploadResults[resultIndex++];
+        if (!result) {
+          throw new Error(`Attachment upload failed for ${attachment.filename}`);
+        }
+        attachmentResults.push({
+          ...result,
+          sizeBytes: attachment.sizeBytes,
+          contentType: attachment.contentType
+        });
         logger.info({ filename: attachment.filename, entityId: result.entityId }, 'Attachment uploaded');
       }
 
