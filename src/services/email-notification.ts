@@ -272,6 +272,91 @@ ForwARd by ArDrive
 }
 
 /**
+ * Send error notification when upload fails unrecoverably
+ */
+export async function sendUploadErrorEmail(
+  to: string,
+  subject: string | undefined,
+  errorMessage: string,
+  retryCount: number
+): Promise<void> {
+  try {
+    const subjectDisplay = subject || 'No Subject';
+
+    const htmlBody = `
+      <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; color: #333;">
+        <div style="text-align: center; margin-bottom: 30px;">
+          <h1 style="color: #e74c3c; font-weight: 300; margin: 0; font-size: 28px;">❌ Email Archive Failed</h1>
+          <p style="color: #666; margin-top: 8px; font-size: 16px;">
+            Unable to archive your email
+          </p>
+        </div>
+
+        <div style="background-color: #fff9f9; padding: 20px; border-radius: 8px; border-left: 4px solid #e74c3c; margin-bottom: 30px;">
+          <p style="margin: 0 0 10px 0; font-size: 16px;"><strong>Email:</strong> "${subjectDisplay}"</p>
+          <p style="margin: 0; font-size: 14px; color: #666;">
+            We attempted to upload your email ${retryCount} time${retryCount > 1 ? 's' : ''} but encountered an error.
+          </p>
+        </div>
+
+        <div style="background-color: #f7f9fc; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
+          <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>Error Details:</strong></p>
+          <p style="margin: 0; font-size: 13px; font-family: monospace; color: #e74c3c; word-break: break-word;">
+            ${errorMessage}
+          </p>
+        </div>
+
+        <div style="background-color: #f0f0f0; padding: 20px; border-radius: 8px;">
+          <p style="margin: 0 0 15px 0; font-size: 14px;"><strong>What to do:</strong></p>
+          <ul style="margin: 0; padding-left: 20px; font-size: 14px; color: #666;">
+            <li>Try sending your email again</li>
+            <li>If you have large attachments, try splitting them into separate emails</li>
+            <li>Check that your email size is under 1GB</li>
+            <li>If the problem persists, contact support</li>
+          </ul>
+        </div>
+
+        <p style="color: #999; font-size: 13px; text-align: center; margin-top: 30px;">
+          ForwARd by ArDrive
+        </p>
+      </div>
+    `;
+
+    const textBody = `
+❌ Email Archive Failed
+
+Email: "${subjectDisplay}"
+We attempted to upload your email ${retryCount} time${retryCount > 1 ? 's' : ''} but encountered an error.
+
+Error Details:
+${errorMessage}
+
+What to do:
+- Try sending your email again
+- If you have large attachments, try splitting them into separate emails
+- Check that your email size is under 1GB
+- If the problem persists, contact support
+
+---
+ForwARd by ArDrive
+    `.trim();
+
+    await transporter.sendMail({
+      from: config.EMAIL_USER,
+      to,
+      subject: `❌ Email archive failed: "${subjectDisplay}"`,
+      text: textBody,
+      html: htmlBody,
+    });
+
+    logger.info({ to }, 'Error notification email sent');
+  } catch (error) {
+    logger.error({ error, to }, 'Failed to send error notification email');
+    // Don't throw - we don't want to fail the error handler
+  }
+}
+
+/**
  * Send usage limit notification
  */
 export async function sendUsageLimitEmail(

@@ -11,7 +11,7 @@ import { processedEmails, uploads, driveFolders } from '../../database/schema';
 import { getOrCreateUser, createPrivateDriveForUser, markWelcomeEmailSent } from '../../services/user-service';
 import { canUserUpload, recordUpload, getUsageSummary } from '../../services/usage-service';
 import { uploadFilesToArDrive, createFolderInDrive, uploadFilesToFolder, getDriveShareKey } from '../../storage/ardrive-storage';
-import { sendUploadConfirmation, sendUsageLimitEmail, sendDriveWelcomeEmail } from '../../services/email-notification';
+import { sendUploadConfirmation, sendUsageLimitEmail, sendDriveWelcomeEmail, sendUploadErrorEmail } from '../../services/email-notification';
 import { type EmailJobData } from '../queue';
 import { generateDrivePassword } from '../../utils/crypto';
 
@@ -65,30 +65,54 @@ async function getOrCreateYearFolder(
 
   // Create year folder
   logger.info({ year }, 'Creating year folder');
-  const { folderId } = await createFolderInDrive(
-    driveId,
-    year.toString(),
-    rootFolderId,
-    drivePassword
-  );
 
-  // Save to cache
-  await db.insert(driveFolders).values({
-    userId,
-    driveId,
-    folderType: 'year',
-    folderName: year.toString(),
-    parentFolderId: rootFolderId,
-    folderEntityId: folderId,
-    year,
-    month: null,
-  });
+  try {
+    const { folderId } = await createFolderInDrive(
+      driveId,
+      year.toString(),
+      rootFolderId,
+      drivePassword
+    );
 
-  // Wait for indexing
-  logger.info({ year, folderId }, 'Waiting 10s for year folder indexing');
-  await new Promise(resolve => setTimeout(resolve, 10000));
+    // Save to cache
+    await db.insert(driveFolders).values({
+      userId,
+      driveId,
+      folderType: 'year',
+      folderName: year.toString(),
+      parentFolderId: rootFolderId,
+      folderEntityId: folderId,
+      year,
+      month: null,
+    });
 
-  return folderId;
+    // Wait for indexing (reduced from 10s to 6s)
+    logger.info({ year, folderId }, 'Waiting 6s for year folder indexing');
+    await new Promise(resolve => setTimeout(resolve, 6000));
+
+    return folderId;
+  } catch (error) {
+    // If folder already exists (e.g., on retry), try to find it
+    logger.warn({ year, error }, 'Year folder creation failed, checking if exists');
+
+    // Check cache again (might have been created by concurrent process)
+    const retryFolder = await db.query.driveFolders.findFirst({
+      where: and(
+        eq(driveFolders.userId, userId),
+        eq(driveFolders.driveId, driveId),
+        eq(driveFolders.folderType, 'year'),
+        eq(driveFolders.year, year)
+      ),
+    });
+
+    if (retryFolder) {
+      logger.info({ year, folderId: retryFolder.folderEntityId }, 'Found year folder in cache after error');
+      return retryFolder.folderEntityId;
+    }
+
+    // If still not found, throw original error
+    throw error;
+  }
 }
 
 /**
@@ -123,30 +147,54 @@ async function getOrCreateMonthFolder(
   // Create month folder (format: "01", "02", etc.)
   const monthStr = month.toString().padStart(2, '0');
   logger.info({ year, month: monthStr }, 'Creating month folder');
-  const { folderId } = await createFolderInDrive(
-    driveId,
-    monthStr,
-    yearFolderId,
-    drivePassword
-  );
 
-  // Save to cache
-  await db.insert(driveFolders).values({
-    userId,
-    driveId,
-    folderType: 'month',
-    folderName: monthStr,
-    parentFolderId: yearFolderId,
-    folderEntityId: folderId,
-    year,
-    month,
-  });
+  try {
+    const { folderId } = await createFolderInDrive(
+      driveId,
+      monthStr,
+      yearFolderId,
+      drivePassword
+    );
 
-  // Wait for indexing
-  logger.info({ year, month: monthStr, folderId }, 'Waiting 10s for month folder indexing');
-  await new Promise(resolve => setTimeout(resolve, 10000));
+    // Save to cache
+    await db.insert(driveFolders).values({
+      userId,
+      driveId,
+      folderType: 'month',
+      folderName: monthStr,
+      parentFolderId: yearFolderId,
+      folderEntityId: folderId,
+      year,
+      month,
+    });
 
-  return folderId;
+    // Wait for indexing (reduced from 10s to 6s)
+    logger.info({ year, month: monthStr, folderId }, 'Waiting 6s for month folder indexing');
+    await new Promise(resolve => setTimeout(resolve, 6000));
+
+    return folderId;
+  } catch (error) {
+    // If folder already exists (e.g., on retry), try to find it
+    logger.warn({ year, month, error }, 'Month folder creation failed, checking if exists');
+
+    // Check cache again
+    const retryFolder = await db.query.driveFolders.findFirst({
+      where: and(
+        eq(driveFolders.userId, userId),
+        eq(driveFolders.driveId, driveId),
+        eq(driveFolders.folderType, 'month'),
+        eq(driveFolders.year, year),
+        eq(driveFolders.month, month)
+      ),
+    });
+
+    if (retryFolder) {
+      logger.info({ year, month, folderId: retryFolder.folderEntityId }, 'Found month folder in cache after error');
+      return retryFolder.folderEntityId;
+    }
+
+    throw error;
+  }
 }
 
 export class EmailProcessor {
@@ -211,9 +259,11 @@ export class EmailProcessor {
     const { uid } = job.data;
     const db = await getDb();
 
-    logger.info({ uid, jobId: job.id }, 'Processing email...');
+    logger.info({ uid, jobId: job.id, attemptsMade: job.attemptsMade }, 'Processing email...');
 
     const tempFiles: string[] = []; // Track all temp files for cleanup
+    let userEmail: string | undefined;
+    let emailSubject: string | undefined;
 
     try {
       // Update status to processing
@@ -231,6 +281,10 @@ export class EmailProcessor {
       if (!from) {
         throw new Error('Email has no sender');
       }
+
+      // Track for error notifications
+      userEmail = from;
+      emailSubject = email.subject;
 
       const emailDate = email.date || new Date();
       const subject = email.subject;
@@ -320,9 +374,9 @@ export class EmailProcessor {
 
         logger.info({ userId: user.id, driveId, rootFolderId }, 'Private drive created');
 
-        // Wait for drive indexing
-        logger.info({ driveId }, 'Waiting 10s for drive indexing');
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        // Wait for drive indexing (reduced from 10s to 6s)
+        logger.info({ driveId }, 'Waiting 6s for drive indexing');
+        await new Promise(resolve => setTimeout(resolve, 6000));
       }
 
       // 7. Send welcome email if this is a new drive (only once)
@@ -374,8 +428,8 @@ export class EmailProcessor {
         driveInfo.drivePassword
       );
 
-      logger.info({ emailFolderId }, 'Email folder created, waiting 10s for indexing');
-      await new Promise(resolve => setTimeout(resolve, 10000));
+      logger.info({ emailFolderId }, 'Email folder created, waiting 6s for indexing');
+      await new Promise(resolve => setTimeout(resolve, 6000));
 
       // 9. Batch upload .eml file + all attachments together (Turbo optimization)
       const filesToUpload = [];
@@ -506,7 +560,8 @@ export class EmailProcessor {
 
       logger.info({ uid, userId: user.id }, 'Email processing complete');
     } catch (error) {
-      logger.error({ uid, error }, 'Error processing email');
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error({ uid, error, attemptsMade: job.attemptsMade }, 'Error processing email');
 
       // Clean up temp files on error
       for (const filepath of tempFiles) {
@@ -521,10 +576,29 @@ export class EmailProcessor {
       await db.update(processedEmails)
         .set({
           status: 'failed',
-          errorMessage: error instanceof Error ? error.message : 'Unknown error',
+          errorMessage,
           processedAt: new Date(),
         })
         .where(eq(processedEmails.uid, uid));
+
+      // Send error notification email on final failure (after all retries exhausted)
+      // BullMQ default: 3 attempts (attemptsMade starts at 1)
+      const maxAttempts = 3;
+      const isFinalFailure = job.attemptsMade >= maxAttempts;
+
+      if (isFinalFailure && userEmail) {
+        logger.warn({ uid, userEmail, attemptsMade: job.attemptsMade }, 'Final failure - sending error email to user');
+        try {
+          await sendUploadErrorEmail(
+            userEmail,
+            emailSubject,
+            errorMessage,
+            job.attemptsMade
+          );
+        } catch (emailError) {
+          logger.error({ emailError }, 'Failed to send error notification email');
+        }
+      }
 
       throw error; // Let BullMQ handle retries
     }
