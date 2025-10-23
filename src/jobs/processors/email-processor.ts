@@ -213,6 +213,8 @@ export class EmailProcessor {
 
     logger.info({ uid, jobId: job.id }, 'Processing email...');
 
+    const tempFiles: string[] = []; // Track all temp files for cleanup
+
     try {
       // Update status to processing
       await db.update(processedEmails)
@@ -230,7 +232,10 @@ export class EmailProcessor {
         throw new Error('Email has no sender');
       }
 
-      logger.info({ uid, from, subject: email.subject }, 'Email fetched');
+      const emailDate = email.date || new Date();
+      const subject = email.subject;
+
+      logger.info({ uid, from, subject }, 'Email fetched');
 
       // 2. Get or create user (validates allowlist)
       const { user, privateDrive } = await getOrCreateUser(from);
@@ -238,11 +243,10 @@ export class EmailProcessor {
       logger.info({ userId: user.id, email: from }, 'User validated');
 
       // 3. Check usage limits
-      const { allowed, reason, usage } = await canUserUpload(user.id);
+      const { allowed, reason } = await canUserUpload(user.id);
       if (!allowed) {
         logger.warn({ userId: user.id, reason }, 'User upload blocked');
 
-        // Send usage limit email
         const summary = await getUsageSummary(user.id);
         await sendUsageLimitEmail(from, reason || 'Usage limit exceeded', summary);
 
@@ -258,43 +262,47 @@ export class EmailProcessor {
 
       // 4. Save attachments to temp directory
       const attachments = await this.saveAttachments(email, uid);
+      attachments.forEach(a => tempFiles.push(a.filepath));
 
-      if (attachments.length === 0) {
-        logger.info({ uid }, 'No attachments to process');
-        await db.update(processedEmails)
-          .set({ status: 'completed', processedAt: new Date() })
-          .where(eq(processedEmails.uid, uid));
-        return;
+      logger.info({ uid, attachmentCount: attachments.length }, 'Attachments saved');
+
+      // 5. Save email as .eml file
+      const emlFile = await this.saveEmailAsEml(uid, emailDate, subject);
+      if (emlFile) {
+        tempFiles.push(emlFile.filepath);
+        logger.info({ uid, emlSize: emlFile.sizeBytes }, 'Email saved as .eml');
       }
 
-      logger.info({ uid, count: attachments.length }, 'Attachments saved');
-
-      // 5. Get or create private drive for user
+      // 6. Get or create private drive for user
       let driveInfo = privateDrive;
+      let isNewDrive = false;
+
       if (!driveInfo) {
-        // Create private drive SEPARATELY from file upload
+        isNewDrive = true;
         logger.info({ userId: user.id }, 'Creating private drive...');
 
-        // Generate password BEFORE creating drive
-        const { generateDrivePassword } = await import('../../utils/crypto');
         const drivePassword = generateDrivePassword();
 
         // Create EMPTY drive first (no files)
         const { driveId, rootFolderId } = await uploadFilesToArDrive(
           user.id,
-          [], // NO FILES - just create the drive
+          [],
           {
             driveName: `${user.email}-private`,
-            drivePassword, // Pass password to create PRIVATE drive
+            drivePassword,
           }
         );
 
-        // Save drive info to database IMMEDIATELY
+        // Derive drive key for sharing
+        const driveKeyBase64 = await getDriveShareKey(driveId, drivePassword);
+
+        // Save drive info to database with drive key
         await createPrivateDriveForUser(
           user.id,
           driveId,
           rootFolderId,
-          drivePassword
+          drivePassword,
+          driveKeyBase64
         );
 
         driveInfo = {
@@ -303,98 +311,167 @@ export class EmailProcessor {
           driveId,
           driveType: 'private' as const,
           rootFolderId,
-          drivePasswordEncrypted: '', // Encrypted in createPrivateDriveForUser
+          drivePasswordEncrypted: '',
+          driveKeyBase64,
+          welcomeEmailSent: false,
           createdAt: new Date(),
-          drivePassword, // Decrypted password
+          drivePassword,
         };
 
-        logger.info({ userId: user.id, driveId, rootFolderId }, 'Private drive created and saved');
+        logger.info({ userId: user.id, driveId, rootFolderId }, 'Private drive created');
 
-        // Wait for ArDrive to index the new drive/folder before uploading files
-        logger.info({ userId: user.id, driveId }, 'Waiting 10 seconds for drive indexing...');
+        // Wait for drive indexing
+        logger.info({ driveId }, 'Waiting 10s for drive indexing');
         await new Promise(resolve => setTimeout(resolve, 10000));
-        logger.info({ userId: user.id, driveId }, 'Drive indexing wait complete');
       }
 
-      // 6. Now upload files to the EXISTING drive
-      logger.info({ userId: user.id, driveId: driveInfo.driveId, fileCount: attachments.length }, 'Uploading files to existing drive');
+      // 7. Send welcome email if this is a new drive (only once)
+      if (isNewDrive && driveInfo.driveKeyBase64) {
+        logger.info({ userId: user.id }, 'Sending welcome email...');
+        await sendDriveWelcomeEmail(
+          from,
+          driveInfo.driveId,
+          driveInfo.driveKeyBase64,
+          user.email
+        );
+        await markWelcomeEmailSent(user.id);
+        logger.info({ userId: user.id }, 'Welcome email sent');
+      }
 
-      const { results } = await uploadFilesToArDrive(
+      // 8. Create folder hierarchy: Year/Month/Email
+      const year = emailDate.getFullYear();
+      const month = emailDate.getMonth() + 1; // JS months are 0-indexed
+
+      logger.info({ year, month }, 'Creating folder hierarchy');
+
+      const yearFolderId = await getOrCreateYearFolder(
         user.id,
-        attachments.map(a => ({
-          filepath: a.filepath,
-          filename: a.filename,
-          contentType: a.contentType,
-        })),
-        {
-          driveId: driveInfo.driveId,
-          rootFolderId: driveInfo.rootFolderId,
-          drivePassword: driveInfo.drivePassword,
-        }
+        driveInfo.driveId,
+        driveInfo.rootFolderId,
+        year,
+        driveInfo.drivePassword
       );
 
-      logger.info({ userId: user.id, uploadCount: results.length }, 'Files uploaded to ArDrive');
+      const monthFolderId = await getOrCreateMonthFolder(
+        user.id,
+        driveInfo.driveId,
+        yearFolderId,
+        year,
+        month,
+        driveInfo.drivePassword
+      );
 
-      // 7. Record uploads in database
-      for (let i = 0; i < results.length; i++) {
-        const result = results[i];
-        const attachment = attachments[i];
+      // Create email folder: YYYY-MM-DD_HH-MM-SS_Subject
+      const timestamp = emailDate.toISOString().replace(/[:.]/g, '-').substring(0, 19);
+      const sanitizedSubject = subject ? sanitizeName(subject, 50) : 'No-Subject';
+      const emailFolderName = `${timestamp}_${sanitizedSubject}`;
 
+      logger.info({ emailFolderName }, 'Creating email folder');
+      const { folderId: emailFolderId } = await createFolderInDrive(
+        driveInfo.driveId,
+        emailFolderName,
+        monthFolderId,
+        driveInfo.drivePassword
+      );
+
+      logger.info({ emailFolderId }, 'Email folder created, waiting 10s for indexing');
+      await new Promise(resolve => setTimeout(resolve, 10000));
+
+      // 9. Upload .eml file to email folder
+      let emlUploadResult = null;
+      if (emlFile) {
+        logger.info({ filename: emlFile.filename }, 'Uploading .eml file');
+        emlUploadResult = await uploadFileToFolder(
+          driveInfo.driveId,
+          emailFolderId,
+          emlFile.filepath,
+          emlFile.filename,
+          driveInfo.drivePassword
+        );
+        logger.info({ entityId: emlUploadResult.entityId }, '.eml file uploaded');
+      }
+
+      // 10. Upload attachments to email folder
+      const attachmentResults = [];
+      for (const attachment of attachments) {
+        logger.info({ filename: attachment.filename }, 'Uploading attachment');
+        const result = await uploadFileToFolder(
+          driveInfo.driveId,
+          emailFolderId,
+          attachment.filepath,
+          attachment.filename,
+          driveInfo.drivePassword
+        );
+        attachmentResults.push({ ...result, sizeBytes: attachment.sizeBytes, contentType: attachment.contentType });
+        logger.info({ filename: attachment.filename, entityId: result.entityId }, 'Attachment uploaded');
+      }
+
+      // 11. Record uploads in database
+      for (const result of attachmentResults) {
         await db.insert(uploads).values({
           userId: user.id,
           emailMessageId: email.messageId || null,
           fileName: result.fileName,
-          sizeBytes: attachment.sizeBytes,
-          contentType: attachment.contentType,
+          sizeBytes: result.sizeBytes,
+          contentType: result.contentType,
           status: 'completed',
           driveId: driveInfo.driveId,
           entityId: result.entityId,
           dataTxId: result.dataTxId || null,
           fileKey: result.fileKey || null,
+          emailFolderEntityId: emailFolderId,
           completedAt: new Date(),
         });
 
-        // Record usage
-        await recordUpload(user.id, attachment.sizeBytes);
+        await recordUpload(user.id, result.sizeBytes);
       }
 
-      // 8. Get upload results for confirmation email
-      const uploadResults = await db.query.uploads.findMany({
-        where: eq(uploads.emailMessageId, email.messageId || ''),
-        orderBy: (uploads, { desc }) => [desc(uploads.createdAt)],
-        limit: attachments.length,
-      });
+      // 12. Update processedEmails with folder and .eml info
+      await db.update(processedEmails)
+        .set({
+          folderEntityId: emailFolderId,
+          folderName: emailFolderName,
+          emlFileEntityId: emlUploadResult?.entityId || null,
+          emlFileKey: emlUploadResult?.fileKey || null,
+        })
+        .where(eq(processedEmails.uid, uid));
 
-      const fileResults = uploadResults.map(u => ({
-        fileName: u.fileName,
-        entityId: u.entityId || '',
-        dataTxId: u.dataTxId || undefined,
-        fileKey: u.fileKey || undefined,
-      }));
-
-      // 7. Get usage summary
+      // 13. Send confirmation email
       const summary = await getUsageSummary(user.id);
 
-      // 8. Send confirmation email
+      const fileResults = attachmentResults.map(r => ({
+        fileName: r.fileName,
+        entityId: r.entityId,
+        dataTxId: r.dataTxId,
+        fileKey: r.fileKey,
+      }));
+
+      const emlInfo = emlUploadResult ? {
+        fileName: emlUploadResult.fileName,
+        entityId: emlUploadResult.entityId,
+        fileKey: emlUploadResult.fileKey,
+      } : null;
+
       await sendUploadConfirmation(
         from,
         fileResults,
-        driveInfo.driveId,
+        emlInfo,
+        subject || 'No Subject',
         summary
       );
 
-      logger.info({ userId: user.id, summary }, 'Confirmation email sent');
+      logger.info({ userId: user.id, fileCount: attachmentResults.length, hasEml: !!emlInfo }, 'Confirmation email sent');
 
-      // 8. Clean up temp files
-      for (const attachment of attachments) {
+      // 14. Clean up temp files
+      for (const filepath of tempFiles) {
         try {
-          unlinkSync(attachment.filepath);
+          unlinkSync(filepath);
         } catch (error) {
-          logger.warn({ filepath: attachment.filepath }, 'Failed to cleanup temp file');
+          logger.warn({ filepath }, 'Failed to cleanup temp file');
         }
       }
 
-      // 9. Mark as completed
+      // 15. Mark as completed
       await db.update(processedEmails)
         .set({ status: 'completed', processedAt: new Date() })
         .where(eq(processedEmails.uid, uid));
@@ -402,6 +479,15 @@ export class EmailProcessor {
       logger.info({ uid, userId: user.id }, 'Email processing complete');
     } catch (error) {
       logger.error({ uid, error }, 'Error processing email');
+
+      // Clean up temp files on error
+      for (const filepath of tempFiles) {
+        try {
+          unlinkSync(filepath);
+        } catch (cleanupError) {
+          logger.warn({ filepath }, 'Failed to cleanup temp file after error');
+        }
+      }
 
       // Mark as failed
       await db.update(processedEmails)
@@ -472,5 +558,57 @@ export class EmailProcessor {
     }
 
     return saved;
+  }
+
+  private async saveEmailAsEml(
+    uid: number,
+    emailDate: Date,
+    subject: string | undefined
+  ): Promise<{ filepath: string; filename: string; sizeBytes: number } | null> {
+    if (!this.imapClient) {
+      throw new Error('IMAP client not connected');
+    }
+
+    const tmpDir = join(process.cwd(), 'tmp');
+    mkdirSync(tmpDir, { recursive: true });
+
+    const lock = await this.imapClient.getMailboxLock('INBOX');
+
+    try {
+      // Fetch raw email source
+      const message = await this.imapClient.fetchOne(String(uid), {
+        source: true,
+      });
+
+      if (!message || !message.source) {
+        logger.warn({ uid }, 'Could not fetch email source for .eml');
+        return null;
+      }
+
+      const emailSource = message.source;
+      const sizeBytes = Buffer.byteLength(emailSource);
+
+      // Check 1GB limit
+      const ONE_GB = 1024 * 1024 * 1024;
+      if (sizeBytes > ONE_GB) {
+        logger.warn({ uid, sizeBytes, limit: ONE_GB }, 'Email exceeds 1GB limit, skipping .eml save');
+        return null;
+      }
+
+      // Create filename: YYYY-MM-DD_Subject.eml
+      const dateStr = emailDate.toISOString().split('T')[0];
+      const sanitizedSubject = subject ? sanitizeName(subject, 50) : 'No-Subject';
+      const filename = `${dateStr}_${sanitizedSubject}.eml`;
+      const filepath = join(tmpDir, `${uid}-${filename}`);
+
+      // Save .eml file
+      writeFileSync(filepath, emailSource);
+
+      logger.info({ uid, filename, sizeBytes }, 'Saved email as .eml');
+
+      return { filepath, filename, sizeBytes };
+    } finally {
+      lock.release();
+    }
   }
 }
