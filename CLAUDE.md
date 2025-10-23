@@ -111,6 +111,7 @@ src/
 **uploads** - Track every file upload
 - id, userId, fileName, sizeBytes, contentType, status (pending/processing/completed/failed)
 - driveId, entityId (ArDrive file ID), dataTxId (Arweave TX), fileKey (private files)
+- emailFolderEntityId (parent email folder for this file)
 
 **usage** - Monthly usage tracking for billing
 - id, userId, periodStart, periodEnd
@@ -122,17 +123,27 @@ src/
 **user_drives** - Per-user ArDrive drives
 - id, userId, driveId, driveType (private/public), rootFolderId
 - drivePasswordEncrypted (AES-256-GCM encrypted)
+- driveKeyBase64 (derived drive key for sharing URLs)
+- welcomeEmailSent (tracks if drive welcome email was sent)
+
+**drive_folders** - Cached year/month folders (prevents duplicate creation)
+- id, userId, driveId, folderType (year/month)
+- folderName (e.g., "2025" or "01"), parentFolderId, folderEntityId
+- year, month (for querying)
 
 **processed_emails** - Track processed emails (prevents duplicates)
 - id, uid (IMAP UID), messageId, sender, subject
 - status (queued/processing/completed/failed), errorMessage, queuedAt, processedAt
+- folderEntityId (email folder in ArDrive), emlFileEntityId (.eml file entity), emlFileKey (file key for .eml)
+- folderName (human-readable folder name)
 
 ### Key Services
 
 #### User Service (`src/services/user-service.ts`)
 - `getOrCreateUser(email)` - Get or create user, checks allowlist
-- `getUserPrivateDrive(userId)` - Get user's private drive with decrypted password
-- `createPrivateDriveForUser()` - Create new private drive
+- `getUserPrivateDrive(userId)` - Get user's private drive with decrypted password and drive key
+- `createPrivateDriveForUser(userId, userEmail, driveKeyBase64)` - Create new private drive
+- `markWelcomeEmailSent(userId)` - Mark that welcome email was sent
 - `isAllowedEmail(email)` - Check email allowlist (supports wildcards like `*@domain.com`)
 
 #### Usage Service (`src/services/usage-service.ts`)
@@ -142,8 +153,11 @@ src/
 - `getUsageSummary(userId)` - Get usage for display ("5/10 free emails used")
 
 #### ArDrive Storage (`src/storage/ardrive-storage.ts`)
-- `uploadFilesToArDrive(userId, files, options)` - Upload files to ArDrive with Turbo
-- Creates drive/folder automatically if doesn't exist
+- `uploadFilesToArDrive(userId, files, options)` - Upload files to ArDrive with Turbo (creates drive if needed)
+- `createFolderInDrive(driveId, folderName, parentFolderId, drivePassword?)` - Create folder in existing drive
+- `getDriveShareKey(driveId, drivePassword)` - Derive base64-encoded drive key for sharing URLs
+- `uploadFilesToFolder(driveId, folderId, files[], drivePassword?)` - **Batch upload multiple files in ONE Turbo transaction**
+- `uploadFileToFolder(driveId, folderId, filepath, filename, drivePassword?)` - Upload single file (wraps batch function)
 - Handles both private (encrypted) and public uploads
 - Returns entityId, dataTxId, fileKey for each file
 
@@ -155,9 +169,12 @@ src/
 - Tracks processed emails in database to prevent duplicates
 
 #### Email Notification Service (`src/services/email-notification.ts`)
-- `sendUploadConfirmation(to, files, driveId, usageSummary)` - Send success email with ArDrive links
+- `sendDriveWelcomeEmail(to, driveId, driveKeyBase64, userEmail)` - Send welcome email with drive sharing link (sent once per user)
+- `sendUploadConfirmation(to, files, emlFile, driveId, usageSummary, emailSubject)` - Send success email with file links (separate sections for .eml and attachments)
 - `sendUsageLimitEmail(to, reason, usageSummary)` - Send limit exceeded notification
+- `sendUploadErrorEmail(to, emailSubject, errorMessage, attemptsMade)` - Send error notification after failed retries
 - Uses Nodemailer with HTML templates from `email-responses.ts`
+- **Two-email system**: Welcome email (drive key) sent once, confirmation emails (file keys) sent per upload
 
 #### Crypto Utils (`src/utils/crypto.ts`)
 - `encrypt(text)` / `decrypt(text)` - AES-256-GCM authenticated encryption
@@ -170,11 +187,15 @@ src/
 - BullMQ worker that processes queued emails
 - Fetches full email content via IMAP
 - Validates user authorization and usage limits
+- Creates hierarchical folder structure (Year > Month > Email)
+- Saves full email as .eml file (RFC 822 format, max 1GB)
 - Saves attachments to temp directory
-- Uploads files to ArDrive
+- **Batch uploads .eml + attachments in ONE Turbo transaction** (5-10x faster)
 - Records uploads in database and tracks usage
-- Sends confirmation email
+- Sends welcome email (first upload) or confirmation email
+- Sends error notification email after final failure
 - Handles retries (3 attempts with exponential backoff)
+- Implements cache-first pattern for folder creation (handles concurrent/retry scenarios)
 
 ### Configuration
 
@@ -215,28 +236,39 @@ Environment variables (validated on startup with Zod):
 5. User Authorization (user-service.ts)
    - Check email allowlist (supports wildcards)
    - Get or create user + private drive
+   - If new drive: derive and store drive key, wait 6s for indexing
                     ↓
 6. Usage Check (usage-service.ts)
    - Verify within free tier (10/month)
    - If exceeded, send limit email and stop
                     ↓
-7. Save attachments to tmp/ directory
+7. Create Hierarchical Folder Structure (email-processor.ts)
+   - Get/create Year folder (e.g., "2025") - cache-first pattern
+   - Get/create Month folder (e.g., "01") - cache-first pattern
+   - Create Email folder (YYYY-MM-DD_HH-MM-SS_Subject)
+   - Wait 6s after each folder creation for ArDrive indexing
                     ↓
-8. Upload to ArDrive (ardrive-storage.ts)
-   - Use existing drive or create new private drive
-   - Upload via ArDrive Core JS v3 with Turbo
-   - Returns: entityId, dataTxId, fileKey
+8. Save Email and Attachments to tmp/ directory
+   - Save full email as .eml file (RFC 822 format, max 1GB)
+   - Save all attachments
                     ↓
-9. Update Database
-   - Insert upload records (uploads table)
-   - Record usage for billing (usage table)
+9. Batch Upload to ArDrive (ardrive-storage.ts)
+   - Upload .eml + ALL attachments in ONE Turbo transaction
+   - Upload to email folder via uploadFilesToFolder()
+   - Returns: entityId, dataTxId, fileKey for each file
                     ↓
-10. Send Confirmation Email (email-notification.ts)
-    - ArDrive file links
-    - Usage summary (e.g., "5/10 free emails used")
-    - Transaction details
+10. Update Database
+    - Insert upload records for each file (uploads table)
+    - Update processedEmails with folder/file IDs
+    - Record usage for billing (usage table)
                     ↓
-11. Cleanup
+11. Send Email Notifications (email-notification.ts)
+    - If first upload: send welcome email with drive sharing link
+    - Send confirmation email with file sharing links
+    - Separate sections for .eml file and attachments
+    - If final failure: send error notification
+                    ↓
+12. Cleanup
     - Delete temp files
     - Mark email as 'completed' in processedEmails
 ```
@@ -247,14 +279,40 @@ Environment variables (validated on startup with Zod):
 - Created on first upload by a user
 - ArDrive Core JS v3 handles encryption/decryption automatically
 - Drive password stored encrypted (AES-256-GCM) in `user_drives` table
-- All files uploaded to same drive (organized by folder if needed)
-- Confirmation email includes file key for private files
+- Drive key derived and stored (base64-encoded) for sharing URLs
+- All files uploaded to same drive, organized in hierarchical folders
+- Welcome email (sent once) includes drive sharing link with drive key
+- Confirmation emails include individual file sharing links with file keys
 
-**Turbo Integration**:
+**Hierarchical Folder Structure**:
+- **Year Folder** (e.g., "2025") - Created once per year, cached in `drive_folders` table
+- **Month Folder** (e.g., "01") - Created once per month, cached in `drive_folders` table
+- **Email Folder** (e.g., "2025-10-23_14-30-45_Project_Update") - Created per email
+  - Format: `YYYY-MM-DD_HH-MM-SS_Subject` (sanitized, max 100 chars)
+  - Contains .eml file + all attachments
+- Cache-first pattern: Check database before creating folders (prevents duplicates on retries)
+- 6-second wait after folder creation for ArDrive indexing
+
+**.eml Email Backup**:
+- Full email saved as .eml file (RFC 822 format)
+- Includes email headers, body, and original attachments
+- Filename: `YYYY-MM-DD_Subject.eml` (sanitized, max 100 chars)
+- Max size: 1GB (larger emails skipped with warning)
+- Can be imported into any email client (Gmail, Outlook, Thunderbird, etc.)
+- Uploaded in same Turbo transaction as attachments
+
+**Turbo Integration & Batch Uploads**:
 - Enabled via `turboSettings: {}` (uses default Turbo settings)
-- Faster uploads using bundled transactions
-- Cost-effective for multiple files
+- **Batch uploads**: .eml + ALL attachments uploaded in ONE Turbo transaction
+- Uses `uploadFilesToFolder()` for efficient multi-file uploads
+- 5-10x faster than sequential uploads, lower cost, better atomicity
 - Automatically handles payment for uploads via wallet balance
+- Supports files up to 10GB (we limit .eml to 1GB)
+
+**Sharing URLs**:
+- **Drive Link**: `https://app.ardrive.io/#/drives/{driveId}?driveKey={driveKeyBase64}`
+- **Private File Link**: `https://app.ardrive.io/#/file/{entityId}/view?fileKey={fileKey}`
+- **Public File Link**: `https://app.ardrive.io/#/file/{entityId}/view`
 
 **Important**: ArDrive Core JS manages all file-level cryptography. Our crypto utils are ONLY for application-layer encryption (drive passwords in database).
 
@@ -320,17 +378,53 @@ const result = await uploadFilesToArDrive('user-id', [
    - IMAP service queues emails → Email processor worker handles async
    - 3 retry attempts with exponential backoff (5s, 25s, 125s)
    - Failed jobs kept in queue for debugging
+   - Error notification sent to user after final failure
+
 2. **User Creation**: Users are auto-created on first email if they're in allowlist
-3. **Drive Creation**: Private drives are created lazily on first upload (handled by email-processor.ts)
-   - **CRITICAL**: After creating a new drive, must wait 10 seconds for ArDrive to index it before uploading files (see email-processor.ts:188-190)
-   - Drive creation and file upload are now separate operations to prevent indexing errors
-4. **Cost Calculation**: Happens in `recordUpload()` - always called after successful upload
-5. **Error Handling**: All services use structured logging (Pino) - logs output to console
-6. **Database**: Uses SQLite with WAL mode - no external DB server needed
-7. **Testing**: Database tests should use in-memory SQLite (`:memory:`)
-8. **Duplicate Prevention**: `processedEmails` table tracks IMAP UIDs to prevent reprocessing
-9. **Graceful Shutdown**: Application handles SIGTERM/SIGINT - stops IMAP, waits for jobs to finish
-10. **Temp Files**: Attachments saved to `tmp/` directory, cleaned up after processing
+   - Welcome email sent on first upload with drive sharing link
+   - Drive key stored in database for future reference
+
+3. **Folder Indexing Wait Times** (Performance Optimized):
+   - **Drive creation**: 6 seconds (reduced from 10s)
+   - **Year folder creation**: 6 seconds (reduced from 10s)
+   - **Month folder creation**: 6 seconds (reduced from 10s)
+   - **Email folder creation**: 6 seconds (reduced from 10s)
+   - First email: ~24 seconds total (drive + year + month + email folders)
+   - Subsequent emails in same month: ~6 seconds (only email folder)
+   - **CRITICAL**: Must wait for ArDrive to index folders before uploading files
+
+4. **Batch Upload Strategy** (Performance Critical):
+   - **ALWAYS use `uploadFilesToFolder()` (plural) for multiple files**
+   - .eml file + ALL attachments uploaded in ONE Turbo transaction
+   - 5-10x faster than sequential uploads, lower cost, better atomicity
+   - Single file uploads automatically use batch function under the hood
+
+5. **Error Recovery & Cache-First Pattern**:
+   - Year/month folder creation wrapped in try-catch
+   - On error: check database cache for existing folder (handles retries/concurrency)
+   - Prevents duplicate folders and unnecessary API calls
+   - Gracefully degrades when folder creation fails mid-retry
+
+6. **Cost Calculation**: Happens in `recordUpload()` - always called after successful upload
+
+7. **Error Handling & User Notifications**:
+   - All services use structured logging (Pino) - logs output to console
+   - Email processor tracks `userEmail` and `emailSubject` for error notifications
+   - After 3 failed retry attempts: `sendUploadErrorEmail()` notifies user
+   - Error email includes actionable troubleshooting steps
+
+8. **Database**: Uses SQLite with WAL mode - no external DB server needed
+   - `drive_folders` table caches year/month folders to prevent duplicates
+
+9. **Testing**: Database tests should use in-memory SQLite (`:memory:`)
+
+10. **Duplicate Prevention**: `processedEmails` table tracks IMAP UIDs to prevent reprocessing
+
+11. **Graceful Shutdown**: Application handles SIGTERM/SIGINT - stops IMAP, waits for jobs to finish
+
+12. **Temp Files**: Attachments and .eml files saved to `tmp/` directory, cleaned up after processing
+
+13. **.eml Size Limit**: Max 1GB per email (Turbo supports up to 10GB, but we limit for practical reasons)
 
 ### Legacy Code (To Be Removed)
 
@@ -446,4 +540,4 @@ SELECT * FROM processed_emails ORDER BY created_at DESC LIMIT 10;
 
 ---
 
-*Last Updated: 2025-10-23*
+*Last Updated: 2025-10-23* (v2.1 - Hierarchical email archiving with .eml backup and batch uploads)
