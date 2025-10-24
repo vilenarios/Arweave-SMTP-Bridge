@@ -14,6 +14,8 @@ import { uploadFilesToArDrive, createFolderInDrive, uploadFilesToFolder, getDriv
 import { sendUploadConfirmation, sendUsageLimitEmail, sendDriveWelcomeEmail, sendUploadErrorEmail } from '../../services/email-notification';
 import { type EmailJobData } from '../queue';
 import { generateDrivePassword } from '../../utils/crypto';
+import { getOrCreateUserWallet } from '../../services/wallet-service';
+import { ensureUserHasCredits } from '../../services/credit-service';
 
 const logger = createLogger('email-processor');
 
@@ -38,7 +40,8 @@ async function getOrCreateYearFolder(
   driveId: string,
   rootFolderId: string,
   year: number,
-  drivePassword?: string
+  drivePassword?: string,
+  userJwk?: object
 ): Promise<string> {
   const db = await getDb();
 
@@ -65,7 +68,8 @@ async function getOrCreateYearFolder(
       driveId,
       year.toString(),
       rootFolderId,
-      drivePassword
+      drivePassword,
+      userJwk
     );
 
     // Save to cache
@@ -118,7 +122,8 @@ async function getOrCreateMonthFolder(
   yearFolderId: string,
   year: number,
   month: number,
-  drivePassword?: string
+  drivePassword?: string,
+  userJwk?: object
 ): Promise<string> {
   const db = await getDb();
 
@@ -147,7 +152,8 @@ async function getOrCreateMonthFolder(
       driveId,
       monthStr,
       yearFolderId,
-      drivePassword
+      drivePassword,
+      userJwk
     );
 
     // Save to cache
@@ -308,6 +314,33 @@ export class EmailProcessor {
         return;
       }
 
+      // 3.5. Handle wallet mode (single vs multi)
+      let userWallet: { address: string; jwk: object } | null = null;
+
+      if (config.WALLET_MODE === 'multi') {
+        logger.info({ userId: user.id }, 'Multi-wallet mode: Getting or creating user wallet');
+        userWallet = await getOrCreateUserWallet(user.id);
+
+        if (!userWallet) {
+          throw new Error('Failed to create user wallet');
+        }
+
+        logger.info({
+          userId: user.id,
+          walletAddress: userWallet.address
+        }, 'User wallet ready');
+
+        // Ensure user has enough Turbo credits (just-in-time allocation)
+        // Estimate: 3MB per email
+        const estimatedBytes = 3 * 1024 * 1024;
+        const estimatedWinc = BigInt(Math.ceil((estimatedBytes / (1024 * 1024 * 1024)) * 1e12)); // ~0.003 Credits
+
+        await ensureUserHasCredits(user.id, userWallet.address, estimatedWinc);
+        logger.info({ userId: user.id }, 'User has sufficient Turbo credits');
+      } else {
+        logger.info('Single-wallet mode: Using master wallet for uploads');
+      }
+
       // 4. Save email as .eml file (includes all embedded attachments)
       const emlFile = await this.saveEmailAsEml(uid, emailDate, subject);
       if (emlFile) {
@@ -374,7 +407,8 @@ export class EmailProcessor {
           from,
           driveInfo.driveId,
           driveInfo.driveKeyBase64,
-          user.email
+          user.email,
+          userWallet?.address // Include wallet address in multi mode
         );
         await markWelcomeEmailSent(user.id);
         logger.info({ userId: user.id }, 'Welcome email sent');
@@ -391,7 +425,8 @@ export class EmailProcessor {
         driveInfo.driveId,
         driveInfo.rootFolderId,
         year,
-        driveInfo.drivePassword
+        driveInfo.drivePassword,
+        userWallet?.jwk
       );
 
       const monthFolderId = await getOrCreateMonthFolder(
@@ -400,7 +435,8 @@ export class EmailProcessor {
         yearFolderId,
         year,
         month,
-        driveInfo.drivePassword
+        driveInfo.drivePassword,
+        userWallet?.jwk
       );
 
       // Create email folder: YYYY-MM-DD_HH-MM-SS_Subject
@@ -413,7 +449,8 @@ export class EmailProcessor {
         driveInfo.driveId,
         emailFolderName,
         monthFolderId,
-        driveInfo.drivePassword
+        driveInfo.drivePassword,
+        userWallet?.jwk // Pass user wallet in multi mode
       );
 
       logger.info({ emailFolderId }, 'Email folder created, waiting 6s for indexing');
@@ -433,7 +470,8 @@ export class EmailProcessor {
           filename: emlFile.filename,
           contentType: 'message/rfc822' // Proper MIME type for .eml files
         }],
-        driveInfo.drivePassword
+        driveInfo.drivePassword,
+        userWallet?.jwk // Pass user wallet in multi mode
       );
 
       const emlUploadResult = uploadResults[0];

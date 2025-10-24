@@ -130,12 +130,20 @@ export async function sendDriveWelcomeEmail(
   to: string,
   driveId: string,
   driveKeyBase64: string,
-  userEmail: string
+  userEmail: string,
+  walletAddress?: string
 ): Promise<void> {
   try {
     // Drive link with name parameter (ArDrive keys are already base64url encoded, don't encode again)
     const driveName = encodeURIComponent(userEmail);
     const driveLink = `https://app.ardrive.io/#/drives/${driveId}?name=${driveName}&driveKey=${driveKeyBase64}`;
+
+    // Wallet address section (only show in multi-wallet mode)
+    const walletSection = walletAddress ? `
+          <p style="margin: 0 0 10px 0; font-size: 14px; color: #666; font-family: monospace;">
+            <strong>Wallet Address:</strong> ${walletAddress}
+          </p>
+    ` : '';
 
     const htmlBody = `
       <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; color: #333;">
@@ -153,6 +161,7 @@ export async function sendDriveWelcomeEmail(
           <p style="margin: 0 0 10px 0; font-size: 14px; color: #666; font-family: monospace;">
             <strong>Drive ID:</strong> ${driveId}
           </p>
+          ${walletSection}
           <p style="margin: 0 0 15px 0; font-size: 14px; color: #666;">
             All your emails and attachments will be archived in this encrypted, permanent storage drive on Arweave.
           </p>

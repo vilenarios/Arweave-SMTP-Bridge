@@ -21,6 +21,11 @@ const envSchema = z.object({
       message: 'ARWEAVE_JWK_PATH file does not exist'
     }),
 
+  // Wallet Mode
+  // - 'single': Use master wallet for all uploads (simpler, current behavior)
+  // - 'multi': Create per-user wallets with Turbo credit sharing (isolated, production-ready)
+  WALLET_MODE: z.enum(['single', 'multi']).default('single'),
+
   // Database
   DATABASE_URL: z.string().default('./data/forward.db'),
 

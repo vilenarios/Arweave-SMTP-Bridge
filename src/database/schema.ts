@@ -9,6 +9,13 @@ export const users = sqliteTable('users', {
   allowed: integer('allowed', { mode: 'boolean' }).notNull().default(true),
   plan: text('plan', { enum: ['free', 'paid'] }).notNull().default('free'),
   stripeCustomerId: text('stripe_customer_id'),
+
+  // Per-user wallet fields (only used in 'multi' wallet mode)
+  userWalletAddress: text('user_wallet_address'), // Arweave address
+  userWalletSeedPhraseEncrypted: text('user_wallet_seed_phrase_encrypted'), // 12 words (encrypted for recovery)
+  userWalletJwkEncrypted: text('user_wallet_jwk_encrypted'), // Full JWK (encrypted for system use)
+  seedPhraseDownloadedAt: integer('seed_phrase_downloaded_at', { mode: 'timestamp' }), // Track if user downloaded
+
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
 });
@@ -151,3 +158,21 @@ export type NewProcessedEmail = typeof processedEmails.$inferInsert;
 
 export type DriveFolder = typeof driveFolders.$inferSelect;
 export type NewDriveFolder = typeof driveFolders.$inferInsert;
+
+// Credit shares table (Turbo credit sharing in 'multi' wallet mode)
+export const creditShares = sqliteTable('credit_shares', {
+  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text('user_id').notNull().references(() => users.id),
+
+  approvalDataItemId: text('approval_data_item_id').notNull(), // From turbo.shareCredits()
+  approvedWincAmount: integer('approved_winc_amount').notNull(), // Amount shared (in winc)
+
+  status: text('status', { enum: ['active', 'expired', 'revoked'] }).notNull().default('active'),
+
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull().$defaultFn(() => new Date()),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(), // 30 days from creation
+  revokedAt: integer('revoked_at', { mode: 'timestamp' }), // If manually revoked
+});
+
+export type CreditShare = typeof creditShares.$inferSelect;
+export type NewCreditShare = typeof creditShares.$inferInsert;

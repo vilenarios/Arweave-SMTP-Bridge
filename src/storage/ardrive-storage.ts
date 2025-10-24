@@ -238,14 +238,16 @@ export async function uploadFilesToArDrive(
 
 /**
  * Create a folder in an existing ArDrive
+ * @param userJwk - Optional user wallet (if not provided, uses master wallet)
  */
 export async function createFolderInDrive(
   driveId: string,
   folderName: string,
   parentFolderId: string,
-  drivePassword?: string
+  drivePassword?: string,
+  userJwk?: object
 ): Promise<FolderResult> {
-  const jwk = JSON.parse(readFileSync(config.ARWEAVE_JWK_PATH, 'utf-8'));
+  const jwk = userJwk || JSON.parse(readFileSync(config.ARWEAVE_JWK_PATH, 'utf-8'));
   const jwkWallet = new JWKWallet(jwk);
 
   const arDrive = arDriveFactory({
@@ -326,18 +328,20 @@ export async function getDriveShareKey(
 /**
  * Upload multiple files to a specific folder in ArDrive using Turbo batching
  * This is more efficient than uploading files one-by-one
+ * @param userJwk - Optional user wallet (if not provided, uses master wallet)
  */
 export async function uploadFilesToFolder(
   driveId: string,
   folderId: string,
   files: Array<{ filepath: string; filename: string; contentType?: string }>,
-  drivePassword?: string
+  drivePassword?: string,
+  userJwk?: object
 ): Promise<UploadResult[]> {
   if (files.length === 0) {
     return [];
   }
 
-  const jwk = JSON.parse(readFileSync(config.ARWEAVE_JWK_PATH, 'utf-8'));
+  const jwk = userJwk || JSON.parse(readFileSync(config.ARWEAVE_JWK_PATH, 'utf-8'));
   const jwkWallet = new JWKWallet(jwk);
 
   const arDrive = arDriveFactory({
@@ -437,20 +441,23 @@ export async function uploadFilesToFolder(
 /**
  * Upload a single file to a specific folder in ArDrive
  * NOTE: For multiple files, use uploadFilesToFolder for better Turbo batching
+ * @param userJwk - Optional user wallet (if not provided, uses master wallet)
  */
 export async function uploadFileToFolder(
   driveId: string,
   folderId: string,
   filepath: string,
   filename: string,
-  drivePassword?: string
+  drivePassword?: string,
+  userJwk?: object
 ): Promise<UploadResult> {
   // Use batch function with single file
   const results = await uploadFilesToFolder(
     driveId,
     folderId,
     [{ filepath, filename }],
-    drivePassword
+    drivePassword,
+    userJwk
   );
 
   if (results.length === 0) {
