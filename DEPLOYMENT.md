@@ -117,6 +117,11 @@ EMAIL_TLS=true
 # Arweave wallet
 ARWEAVE_JWK_PATH=./wallet.json
 
+# Wallet Mode
+# - 'single': Use master wallet for all uploads (default, simpler)
+# - 'multi': Per-user wallets with Turbo credit sharing (production)
+WALLET_MODE=single
+
 # Database
 DATABASE_URL=./data/forward.db
 
