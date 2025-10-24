@@ -17,6 +17,7 @@ ForwARd is an email-to-ArDrive bridge that automatically uploads email attachmen
 - 🚀 **Fast uploads** - Uses ArDrive Turbo for bundled transactions
 - ✉️ **Confirmation emails** - Get ArDrive links and transaction details
 - 🛡️ **Email allowlist** - Restrict access to specific users or domains
+- 👛 **Flexible wallet modes** - Single master wallet or per-user isolated wallets with credit sharing
 
 ## Requirements
 
@@ -81,6 +82,11 @@ EMAIL_TLS=true
 
 # Arweave Wallet (path to JWK file)
 ARWEAVE_JWK_PATH=./wallet.json
+
+# Wallet Mode
+# - 'single': Use master wallet for all uploads (simpler, default)
+# - 'multi': Create per-user wallets with Turbo credit sharing (isolated)
+WALLET_MODE=single
 
 # Database (SQLite - auto-created)
 DATABASE_URL=./data/forward.db
@@ -162,6 +168,32 @@ You should see:
    - ArDrive file links
    - Transaction details
    - Usage summary (e.g., "You've used 5/10 free emails this month")
+
+## Wallet Modes
+
+ForwARd supports two wallet modes via the `WALLET_MODE` environment variable:
+
+### Single Wallet Mode (Default)
+```bash
+WALLET_MODE=single
+```
+- All uploads use the master wallet (specified in `ARWEAVE_JWK_PATH`)
+- Simpler setup, no per-user wallet management
+- All users share the same wallet for storage costs
+- **Recommended for**: Personal use or small teams with centralized billing
+
+### Multi-Wallet Mode
+```bash
+WALLET_MODE=multi
+```
+- Each user gets their own custodied Arweave wallet
+- Wallets auto-generated on first upload (12-word seed phrase stored encrypted)
+- Uses Turbo credit sharing with 30-day expiration for just-in-time funding
+- Perfect isolation between users
+- Wallet address shown in welcome email
+- **Recommended for**: Production deployments with multiple independent users
+
+**Note**: When switching modes, existing users will continue working. New users will use the new mode's wallet strategy.
 
 ## Email Allowlist
 
@@ -328,12 +360,14 @@ Email Processor Worker
 See [CLAUDE.md](./CLAUDE.md) for detailed schema documentation.
 
 **Tables:**
-- `users` - User accounts with plan info
+- `users` - User accounts with plan info and optional wallet data
 - `uploads` - File upload records
 - `usage` - Monthly usage tracking
 - `payments` - Payment transactions (Stripe ready)
 - `user_drives` - ArDrive drive info per user
 - `processed_emails` - Email processing status
+- `drive_folders` - Cached year/month folders for hierarchical organization
+- `credit_shares` - Turbo credit sharing records (multi-wallet mode)
 
 ## Security
 

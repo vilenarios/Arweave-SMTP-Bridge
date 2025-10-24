@@ -4,6 +4,7 @@ import { users } from '../database/schema';
 import { eq } from 'drizzle-orm';
 import { encrypt, decrypt } from '../utils/crypto';
 import { createLogger } from '../config/logger';
+import { config } from '../config/env';
 
 const logger = createLogger('wallet-service');
 

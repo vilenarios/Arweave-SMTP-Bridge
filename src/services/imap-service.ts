@@ -176,7 +176,7 @@ export class IMAPService {
         // Process each email
         for (const uid of messages) {
           // Check if already processed
-          const existing = await db.query.processedEmails.findFirst({
+          const existing = await (db.query as any).processedEmails?.findFirst({
             where: eq(processedEmails.uid, uid),
           });
 

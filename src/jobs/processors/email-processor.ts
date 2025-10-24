@@ -128,7 +128,7 @@ async function getOrCreateMonthFolder(
   const db = await getDb();
 
   // Check if month folder exists in cache
-  const existingFolder = await db.query.driveFolders.findFirst({
+  const existingFolder = await (db.query as any).driveFolders?.findFirst({
     where: and(
       eq(driveFolders.userId, userId),
       eq(driveFolders.driveId, driveId),

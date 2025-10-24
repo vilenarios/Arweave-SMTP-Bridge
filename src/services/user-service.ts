@@ -53,7 +53,7 @@ export async function getOrCreateUser(email: string): Promise<UserWithDrive> {
   }
 
   // Try to find existing user
-  let user = await db.query.users.findFirst({
+  let user = await (db.query as any).users?.findFirst({
     where: eq(users.email, emailLower),
   });
 
@@ -72,7 +72,7 @@ export async function getOrCreateUser(email: string): Promise<UserWithDrive> {
   }
 
   // Get user's private drive if exists
-  const privateDrive = await db.query.userDrives.findFirst({
+  const privateDrive = await (db.query as any).userDrives?.findFirst({
     where: and(
       eq(userDrives.userId, user.id),
       eq(userDrives.driveType, 'private')
@@ -131,7 +131,7 @@ export async function createPrivateDriveForUser(
 export async function getUserPrivateDrive(userId: string): Promise<(UserDrive & { drivePassword: string }) | null> {
   const db = await getDb();
 
-  const drive = await db.query.userDrives.findFirst({
+  const drive = await (db.query as any).userDrives?.findFirst({
     where: and(
       eq(userDrives.userId, userId),
       eq(userDrives.driveType, 'private')

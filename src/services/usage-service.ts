@@ -25,7 +25,7 @@ export async function getCurrentUsage(userId: string): Promise<Usage> {
   const { start, end } = getCurrentBillingPeriod();
 
   // Try to find existing usage record for current period
-  let usageRecord = await db.query.usage.findFirst({
+  let usageRecord = await (db.query as any).usage?.findFirst({
     where: and(
       eq(usage.userId, userId),
       gte(usage.periodStart, start),
