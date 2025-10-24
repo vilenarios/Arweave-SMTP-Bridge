@@ -153,25 +153,29 @@ export class IMAPService {
 
     try {
       const db = await getDb();
+      const sinceDate = new Date(Date.now() - SEARCH_DAYS * 24 * 60 * 60 * 1000);
 
-      // Open INBOX
-      const lock = await this.client.getMailboxLock('INBOX');
+      // Check both INBOX and Spam folders
+      const foldersToCheck = ['INBOX', '[Gmail]/Spam'];
 
-      try {
-        // Search for UNSEEN emails from last 7 days
-        const sinceDate = new Date(Date.now() - SEARCH_DAYS * 24 * 60 * 60 * 1000);
+      for (const folder of foldersToCheck) {
+        try {
+          // Open folder
+          const lock = await this.client.getMailboxLock(folder);
 
-        const messages = await this.client.search({
-          seen: false,
-          since: sinceDate,
-        });
+          try {
+            // Search for UNSEEN emails from last 7 days
+            const messages = await this.client.search({
+              seen: false,
+              since: sinceDate,
+            });
 
-        if (messages.length === 0) {
-          logger.debug('No new emails');
-          return;
-        }
+            if (messages.length === 0) {
+              logger.debug({ folder }, 'No new emails in folder');
+              continue;
+            }
 
-        logger.info({ count: messages.length }, 'Found unseen emails');
+            logger.info({ folder, count: messages.length }, 'Found unseen emails');
 
         // Process each email
         for (const uid of messages) {
@@ -214,11 +218,16 @@ export class IMAPService {
           // Mark as SEEN (prevents re-processing if app crashes)
           await this.client.messageFlagsAdd([uid], ['\\Seen']);
 
-          logger.info({ uid, from, subject }, 'Email queued');
+          logger.info({ uid, from, subject, folder }, 'Email queued');
         }
       } finally {
         lock.release();
       }
+    } catch (folderError) {
+      // Log error for this specific folder but continue to next folder
+      logger.warn({ folder, error: folderError }, 'Error polling folder');
+    }
+  }
     } catch (error) {
       // Don't crash on poll errors - just log and continue
       logger.error({ error }, 'Error during polling');
