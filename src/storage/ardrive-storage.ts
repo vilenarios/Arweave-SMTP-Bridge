@@ -197,10 +197,20 @@ export async function uploadFilesToArDrive(
 
     // File entities have entityId (which is the file ID in ArDrive)
     if (entity.entityId) {
+      // Convert file key to base64url format (URL-safe)
+      let fileKey: string | undefined;
+      if (isPrivate && entity.key) {
+        const keyBase64 = entity.key.toString();
+        fileKey = keyBase64
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=/g, '');
+      }
+
       results.push({
         entityId: entity.entityId.toString(),
         dataTxId: entity.dataTxId?.toString(),
-        fileKey: isPrivate ? entity.key?.toString() : undefined,
+        fileKey,
         fileName: files[fileIndex]?.filename || 'unknown'
       });
       fileIndex++;
@@ -295,12 +305,17 @@ export async function getDriveShareKey(
     JSON.stringify(jwkWallet.getPrivateKey())
   );
 
-  // Convert drive key to base64 for URL
-  const driveKeyBase64 = Buffer.from(JSON.stringify(driveKey)).toString('base64');
+  // Extract keyData buffer and convert to base64url format (URL-safe)
+  // Use .keyData.toString('base64') just like ArDrive does for file keys
+  const driveKeyBase64 = driveKey.keyData.toString('base64');
+  const driveKeyBase64Url = driveKeyBase64
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
 
-  logger.info({ driveId }, 'Derived drive share key');
+  logger.info({ driveId, base64: driveKeyBase64.substring(0, 20), base64url: driveKeyBase64Url.substring(0, 20) }, 'Derived drive share key');
 
-  return driveKeyBase64;
+  return driveKeyBase64Url;
 }
 
 /**
@@ -380,10 +395,20 @@ export async function uploadFilesToFolder(
     if (fileIndex >= files.length) break;
 
     if (entity.entityId) {
+      // Convert file key to base64url format (URL-safe)
+      let fileKey: string | undefined;
+      if (isPrivate && entity.key) {
+        const keyBase64 = entity.key.toString();
+        fileKey = keyBase64
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=/g, '');
+      }
+
       results.push({
         entityId: entity.entityId.toString(),
         dataTxId: entity.dataTxId?.toString(),
-        fileKey: isPrivate ? entity.key?.toString() : undefined,
+        fileKey,
         fileName: files[fileIndex]?.filename || 'unknown'
       });
       fileIndex++;

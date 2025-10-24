@@ -22,7 +22,7 @@
   },
   "dependencies": {
     "@ardrive/turbo-sdk": "^1.32.1",
-    "ardrive-core-js": "^3.0.4",
+    "ardrive-core-js": "3.1.0",
     "arweave": "^1.15.7",
     "bullmq": "^5.61.0",
     "dotenv": "^17.2.3",

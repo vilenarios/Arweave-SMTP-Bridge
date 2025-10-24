@@ -44,14 +44,14 @@ export async function sendUploadConfirmation(
   usage: UsageSummary
 ): Promise<void> {
   try {
-    // Build .eml file section
+    // Build .eml file section (fileKey is already base64url encoded, don't encode again)
     const emlSection = emlFile ? `
       <div style="margin-bottom: 30px; border-bottom: 2px solid #e0e0e0; padding-bottom: 20px;">
         <h2 style="margin: 0 0 15px 0; font-size: 18px; color: #333;">📧 Full Email Backup</h2>
         <div style="background-color: #f7f9fc; padding: 15px; border-radius: 8px;">
           <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>${emlFile.fileName}</strong></p>
           <p style="margin: 0; font-size: 13px; font-family: monospace; word-break: break-all;">
-            <a href="https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${encodeURIComponent(emlFile.fileKey)}` : ''}" target="_blank" style="color: #0066cc;">
+            <a href="https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}" target="_blank" style="color: #0066cc;">
               🔗 Download .eml file
             </a>
           </p>
@@ -62,14 +62,14 @@ export async function sendUploadConfirmation(
       </div>
     ` : '';
 
-    // Build file list HTML with proper private file sharing links
+    // Build file list HTML with proper private file sharing links (fileKey is already base64url encoded)
     const fileListHtml = files.length > 0 ? `
       <div style="margin-bottom: 30px;">
         <h2 style="margin: 0 0 15px 0; font-size: 18px; color: #333;">📎 Attachments (${files.length})</h2>
         ${files.map(file => {
-          // For private files, use sharing link with fileKey parameter
+          // For private files, use sharing link with fileKey parameter (don't encode, it's already base64url)
           const fileLink = file.fileKey
-            ? `https://app.ardrive.io/#/file/${file.entityId}/view?fileKey=${encodeURIComponent(file.fileKey)}`
+            ? `https://app.ardrive.io/#/file/${file.entityId}/view?fileKey=${file.fileKey}`
             : `https://app.ardrive.io/#/file/${file.entityId}/view`;
 
           return `
@@ -123,7 +123,7 @@ export async function sendUploadConfirmation(
     const emlTextSection = emlFile ? `
 📧 Full Email Backup:
 ${emlFile.fileName}
-🔗 https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${encodeURIComponent(emlFile.fileKey)}` : ''}
+🔗 https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}
 Import this file into any email client (Gmail, Outlook, Thunderbird, etc.)
 
 ` : '';
@@ -132,7 +132,7 @@ Import this file into any email client (Gmail, Outlook, Thunderbird, etc.)
 📎 Attachments (${files.length}):
 ${files.map(f => {
   const link = f.fileKey
-    ? `https://app.ardrive.io/#/file/${f.entityId}/view?fileKey=${encodeURIComponent(f.fileKey)}`
+    ? `https://app.ardrive.io/#/file/${f.entityId}/view?fileKey=${f.fileKey}`
     : `https://app.ardrive.io/#/file/${f.entityId}/view`;
   return `- ${f.fileName}\n  🔗 ${link}`;
 }).join('\n')}
@@ -179,7 +179,9 @@ export async function sendDriveWelcomeEmail(
   userEmail: string
 ): Promise<void> {
   try {
-    const driveLink = `https://app.ardrive.io/#/drives/${driveId}?driveKey=${encodeURIComponent(driveKeyBase64)}`;
+    // Drive link with name parameter (ArDrive keys are already base64url encoded, don't encode again)
+    const driveName = encodeURIComponent(userEmail);
+    const driveLink = `https://app.ardrive.io/#/drives/${driveId}?name=${driveName}&driveKey=${driveKeyBase64}`;
 
     const htmlBody = `
       <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; color: #333;">
@@ -191,8 +193,11 @@ export async function sendDriveWelcomeEmail(
         </div>
 
         <div style="background-color: #f7f9fc; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
-          <p style="margin: 0 0 15px 0; font-size: 16px;">
+          <p style="margin: 0 0 10px 0; font-size: 16px;">
             <strong>Your Private Drive:</strong> ${userEmail}
+          </p>
+          <p style="margin: 0 0 10px 0; font-size: 14px; color: #666; font-family: monospace;">
+            <strong>Drive ID:</strong> ${driveId}
           </p>
           <p style="margin: 0 0 15px 0; font-size: 14px; color: #666;">
             All your emails and attachments will be archived in this encrypted, permanent storage drive on Arweave.
@@ -202,6 +207,13 @@ export async function sendDriveWelcomeEmail(
               🔗 Open Your Drive
             </a>
           </div>
+        </div>
+
+        <div style="background-color: #fffacd; padding: 20px; border-radius: 8px; border-left: 4px solid #f39c12; margin-bottom: 20px;">
+          <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>⏱️ Indexing Delay:</strong></p>
+          <p style="margin: 0; font-size: 14px; color: #666;">
+            New files may take up to <strong>10 minutes</strong> to appear in ArDrive after upload. This is normal behavior for the Arweave network's indexing process.
+          </p>
         </div>
 
         <div style="background-color: #fff9f9; padding: 20px; border-radius: 8px; border-left: 4px solid #e74c3c; margin-bottom: 30px;">
@@ -236,9 +248,14 @@ export async function sendDriveWelcomeEmail(
 Welcome to ForwARd - Your Personal Email Archive
 
 Your Private Drive: ${userEmail}
+Drive ID: ${driveId}
+
 All your emails and attachments will be archived in this encrypted, permanent storage drive on Arweave.
 
 🔗 Open Your Drive: ${driveLink}
+
+⏱️ INDEXING DELAY:
+New files may take up to 10 minutes to appear in ArDrive after upload. This is normal behavior for the Arweave network's indexing process.
 
 ⚠️ IMPORTANT SECURITY NOTICE:
 - This link contains your drive key - keep it secure!
