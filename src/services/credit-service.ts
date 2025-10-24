@@ -108,10 +108,10 @@ export async function ensureUserHasCredits(
 ): Promise<void> {
   logger.info({ userId, userAddress, requiredWinc: requiredWinc.toString() }, 'Checking user credit balance');
 
-  const db = await getDb();
+  const database = await getDb();
 
   // Get user wallet info
-  const user = await db.query.users.findFirst({
+  const user = await (database.query as any).users?.findFirst({
     where: eq(users.id, userId)
   });
 
@@ -149,11 +149,10 @@ export async function ensureUserHasCredits(
   const approvalDataItemId = await shareCreditsWith(userAddress, creditsToShare);
 
   // Record the share in database
-  const db = await getDb();
-  await db.insert(creditShares).values({
+  await database.insert(creditShares).values({
     userId,
     approvalDataItemId,
-    approvedWincAmount: Number(creditsToShare), // SQLite doesn't support bigint, convert to number
+    approvedWincAmount: Number(creditsToShare) as any, // SQLite doesn't support bigint, convert to number
     status: 'active',
     expiresAt: new Date(Date.now() + THIRTY_DAYS_SECONDS * 1000)
   });
@@ -171,7 +170,7 @@ export async function ensureUserHasCredits(
 export async function revokeUserCredits(userId: string): Promise<void> {
   const db = await getDb();
 
-  const user = await db.query.users.findFirst({
+  const user = await (db.query as any).users?.findFirst({
     where: eq(users.id, userId)
   });
 

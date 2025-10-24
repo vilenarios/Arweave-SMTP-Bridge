@@ -1,9 +1,8 @@
 import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core';
-import { sql } from 'drizzle-orm';
 
 // Users table
 export const users = sqliteTable('users', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id').primaryKey().$defaultFn(() => (globalThis.crypto as any).randomUUID()),
   email: text('email').notNull().unique(),
   emailVerified: integer('email_verified', { mode: 'boolean' }).notNull().default(false),
   allowed: integer('allowed', { mode: 'boolean' }).notNull().default(true),
@@ -22,7 +21,7 @@ export const users = sqliteTable('users', {
 
 // Uploads table
 export const uploads = sqliteTable('uploads', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id').primaryKey().$defaultFn(() => (globalThis.crypto as any).randomUUID()),
   userId: text('user_id').notNull().references(() => users.id),
   emailMessageId: text('email_message_id'), // Original email message ID
   fileName: text('file_name').notNull(),
@@ -44,7 +43,7 @@ export const uploads = sqliteTable('uploads', {
 
 // Usage tracking table (per billing period)
 export const usage = sqliteTable('usage', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id').primaryKey().$defaultFn(() => (globalThis.crypto as any).randomUUID()),
   userId: text('user_id').notNull().references(() => users.id),
 
   // Billing period
@@ -65,7 +64,7 @@ export const usage = sqliteTable('usage', {
 
 // Payment transactions
 export const payments = sqliteTable('payments', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id').primaryKey().$defaultFn(() => (globalThis.crypto as any).randomUUID()),
   userId: text('user_id').notNull().references(() => users.id),
 
   // Stripe details
@@ -84,7 +83,7 @@ export const payments = sqliteTable('payments', {
 
 // ArDrive drives per user (one private drive per user)
 export const userDrives = sqliteTable('user_drives', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id').primaryKey().$defaultFn(() => (globalThis.crypto as any).randomUUID()),
   userId: text('user_id').notNull().references(() => users.id),
 
   driveId: text('drive_id').notNull().unique(),
@@ -101,7 +100,7 @@ export const userDrives = sqliteTable('user_drives', {
 
 // ArDrive folder cache (year/month folders to avoid recreating)
 export const driveFolders = sqliteTable('drive_folders', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id').primaryKey().$defaultFn(() => (globalThis.crypto as any).randomUUID()),
   userId: text('user_id').notNull().references(() => users.id),
   driveId: text('drive_id').notNull(),
 
@@ -118,7 +117,7 @@ export const driveFolders = sqliteTable('drive_folders', {
 
 // Processed emails tracking (prevents duplicate processing)
 export const processedEmails = sqliteTable('processed_emails', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id').primaryKey().$defaultFn(() => (globalThis.crypto as any).randomUUID()),
   uid: integer('uid').notNull().unique(), // IMAP UID
   messageId: text('message_id'), // Email Message-ID header
   sender: text('sender').notNull(), // From address
@@ -161,7 +160,7 @@ export type NewDriveFolder = typeof driveFolders.$inferInsert;
 
 // Credit shares table (Turbo credit sharing in 'multi' wallet mode)
 export const creditShares = sqliteTable('credit_shares', {
-  id: text('id').primaryKey().$defaultFn(() => crypto.randomUUID()),
+  id: text('id').primaryKey().$defaultFn(() => (globalThis.crypto as any).randomUUID()),
   userId: text('user_id').notNull().references(() => users.id),
 
   approvalDataItemId: text('approval_data_item_id').notNull(), // From turbo.shareCredits()

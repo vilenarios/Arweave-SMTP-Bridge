@@ -46,7 +46,7 @@ async function getOrCreateYearFolder(
   const db = await getDb();
 
   // Check if year folder exists in cache
-  const existingFolder = await db.query.driveFolders.findFirst({
+  const existingFolder = await (db.query as any).driveFolders?.findFirst({
     where: and(
       eq(driveFolders.userId, userId),
       eq(driveFolders.driveId, driveId),
@@ -94,7 +94,7 @@ async function getOrCreateYearFolder(
     logger.warn({ year, error }, 'Year folder creation failed, checking if exists');
 
     // Check cache again (might have been created by concurrent process)
-    const retryFolder = await db.query.driveFolders.findFirst({
+    const retryFolder = await (db.query as any).driveFolders?.findFirst({
       where: and(
         eq(driveFolders.userId, userId),
         eq(driveFolders.driveId, driveId),
@@ -178,7 +178,7 @@ async function getOrCreateMonthFolder(
     logger.warn({ year, month, error }, 'Month folder creation failed, checking if exists');
 
     // Check cache again
-    const retryFolder = await db.query.driveFolders.findFirst({
+    const retryFolder = await (db.query as any).driveFolders?.findFirst({
       where: and(
         eq(driveFolders.userId, userId),
         eq(driveFolders.driveId, driveId),
@@ -381,7 +381,7 @@ export class EmailProcessor {
         );
 
         driveInfo = {
-          id: crypto.randomUUID(),
+          id: (globalThis.crypto as any).randomUUID(),
           userId: user.id,
           driveId,
           driveType: 'private' as const,

@@ -1,16 +1,15 @@
-import { WalletDAO, SeedPhrase, JWKWallet } from 'ardrive-core-js';
-import { db } from '../database/db';
+import { WalletDAO } from 'ardrive-core-js';
+import { getDb } from '../database/db';
 import { users } from '../database/schema';
 import { eq } from 'drizzle-orm';
 import { encrypt, decrypt } from '../utils/crypto';
 import { createLogger } from '../config/logger';
-import { config } from '../config/env';
 
 const logger = createLogger('wallet-service');
 
 export interface UserWalletInfo {
   address: string;
-  jwk: object; // Full JWK for signing
+  jwk: any; // Full JWK for signing
   seedPhrase?: string; // Only returned when explicitly requested
 }
 
@@ -21,9 +20,9 @@ export interface UserWalletInfo {
 export async function generateUserWallet(): Promise<{
   address: string;
   seedPhrase: string;
-  jwk: object;
+  jwk: any;
 }> {
-  const walletDAO = new WalletDAO();
+  const walletDAO = new WalletDAO() as any;
 
   logger.info('Generating new user wallet');
 
@@ -52,8 +51,9 @@ export async function storeUserWallet(
   userId: string,
   address: string,
   seedPhrase: string,
-  jwk: object
+  jwk: any
 ): Promise<void> {
+  const db = await getDb();
   const encryptedSeedPhrase = encrypt(seedPhrase);
   const encryptedJwk = encrypt(JSON.stringify(jwk));
 
@@ -73,7 +73,8 @@ export async function storeUserWallet(
  * Does NOT include seed phrase by default for security
  */
 export async function getUserWallet(userId: string): Promise<UserWalletInfo | null> {
-  const user = await db.query.users.findFirst({
+  const db = await getDb();
+  const user = await (db.query as any).users?.findFirst({
     where: eq(users.id, userId)
   });
 
@@ -94,7 +95,8 @@ export async function getUserWallet(userId: string): Promise<UserWalletInfo | nu
  * Should only be called when user explicitly requests it
  */
 export async function getUserSeedPhrase(userId: string): Promise<string | null> {
-  const user = await db.query.users.findFirst({
+  const db = await getDb();
+  const user = await (db.query as any).users?.findFirst({
     where: eq(users.id, userId)
   });
 
@@ -146,7 +148,8 @@ export async function getOrCreateUserWallet(userId: string): Promise<UserWalletI
  * Check if user has a wallet
  */
 export async function userHasWallet(userId: string): Promise<boolean> {
-  const user = await db.query.users.findFirst({
+  const db = await getDb();
+  const user = await (db.query as any).users?.findFirst({
     where: eq(users.id, userId),
     columns: {
       userWalletAddress: true
