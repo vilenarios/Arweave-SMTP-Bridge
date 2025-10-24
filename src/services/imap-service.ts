@@ -164,9 +164,9 @@ export class IMAPService {
           const lock = await this.client.getMailboxLock(folder);
 
           try {
-            // Search for UNSEEN emails from last 7 days
+            // Search for all emails from last 7 days (not just unseen)
+            // We rely on database tracking for duplicates, not SEEN flag
             const messages = await this.client.search({
-              seen: false,
               since: sinceDate,
             });
 
@@ -204,7 +204,7 @@ export class IMAPService {
           const messageId = message.envelope.messageId || null;
 
           // Queue for processing
-          await queueEmail(uid);
+          await queueEmail(uid, folder);
 
           // Record in database
           await db.insert(processedEmails).values({

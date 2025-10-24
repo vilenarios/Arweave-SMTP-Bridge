@@ -24,7 +24,11 @@
       "Bash(git reset:*)",
       "Bash(git commit -m \"$(cat <<''EOF''\nClean up legacy and archived code\n\nRemoved files:\n- archive/ directory (all old implementations)\n- src/services/email-upload.ts (old monolithic processor)\n- src/services/arweave-upload.ts (legacy Turbo/Arweave.js)\n- src/services/ardrive-upload.ts (old ArDrive v2)\n- src/services/user-manager.ts (old user management with broken GraphQL)\n- src/services/crypto.ts (duplicate, use utils/crypto.ts)\n- src/services/__tests__/ (tests for deleted services)\n\nChanges:\n- Moved UploadedFileInfo interface to email-responses.ts\n- Updated CLAUDE.md to remove legacy code documentation\n- Updated testing strategy section\n\nThe codebase now only contains production code in use:\n- email-processor.ts (current email processing)\n- imap-service.ts (email monitoring)\n- ardrive-storage.ts (ArDrive v3 with Turbo)\n- user-service.ts (user management)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
       "Bash(node -e:*)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(pm2 logs:*)",
+      "Bash(pm2 stop:*)",
+      "Bash(pm2 start:*)",
+      "Bash(timeout 60 pm2 logs:*)"
     ],
     "deny": [],
     "ask": []

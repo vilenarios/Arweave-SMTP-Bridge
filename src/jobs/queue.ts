@@ -47,17 +47,19 @@ queueEvents.on('retrying', ({ jobId, attemptsMade }) => {
 // Job data interfaces
 export interface EmailJobData {
   uid: number; // IMAP UID
+  folder: string; // IMAP folder (INBOX, [Gmail]/Spam, etc.)
   queuedAt: number; // Timestamp
 }
 
 // Helper function to add email to queue
-export async function queueEmail(uid: number): Promise<void> {
+export async function queueEmail(uid: number, folder: string): Promise<void> {
   await emailQueue.add('process-email', {
     uid,
+    folder,
     queuedAt: Date.now(),
   } as EmailJobData);
 
-  logger.info({ uid }, 'Email queued for processing');
+  logger.info({ uid, folder }, 'Email queued for processing');
 }
 
 // Graceful shutdown

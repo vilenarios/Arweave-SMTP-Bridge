@@ -256,10 +256,10 @@ export class EmailProcessor {
   }
 
   private async processJob(job: Job<EmailJobData>): Promise<void> {
-    const { uid } = job.data;
+    const { uid, folder } = job.data;
     const db = await getDb();
 
-    logger.info({ uid, jobId: job.id, attemptsMade: job.attemptsMade }, 'Processing email...');
+    logger.info({ uid, folder, jobId: job.id, attemptsMade: job.attemptsMade }, 'Processing email...');
 
     const tempFiles: string[] = []; // Track all temp files for cleanup
     let userEmail: string | undefined;
@@ -272,7 +272,7 @@ export class EmailProcessor {
         .where(eq(processedEmails.uid, uid));
 
       // 1. Fetch full email from IMAP
-      const email = await this.fetchEmail(uid);
+      const email = await this.fetchEmail(uid, folder);
       if (!email) {
         throw new Error(`Could not fetch email with UID ${uid}`);
       }
@@ -586,12 +586,12 @@ export class EmailProcessor {
     }
   }
 
-  private async fetchEmail(uid: number): Promise<ParsedMail | null> {
+  private async fetchEmail(uid: number, folder: string): Promise<ParsedMail | null> {
     if (!this.imapClient) {
       throw new Error('IMAP client not connected');
     }
 
-    const lock = await this.imapClient.getMailboxLock('INBOX');
+    const lock = await this.imapClient.getMailboxLock(folder);
 
     try {
       // Fetch full email
