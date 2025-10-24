@@ -17,12 +17,6 @@ import { generateDrivePassword } from '../../utils/crypto';
 
 const logger = createLogger('email-processor');
 
-interface SavedAttachment {
-  filepath: string;
-  filename: string;
-  contentType: string;
-  sizeBytes: number;
-}
 
 /**
  * Helper: Sanitize folder/file name (remove special chars, limit length)
@@ -314,13 +308,7 @@ export class EmailProcessor {
         return;
       }
 
-      // 4. Save attachments to temp directory
-      const attachments = await this.saveAttachments(email, uid);
-      attachments.forEach(a => tempFiles.push(a.filepath));
-
-      logger.info({ uid, attachmentCount: attachments.length }, 'Attachments saved');
-
-      // 5. Save email as .eml file
+      // 4. Save email as .eml file (includes all embedded attachments)
       const emlFile = await this.saveEmailAsEml(uid, emailDate, subject);
       if (emlFile) {
         tempFiles.push(emlFile.filepath);
@@ -431,118 +419,73 @@ export class EmailProcessor {
       logger.info({ emailFolderId }, 'Email folder created, waiting 6s for indexing');
       await new Promise(resolve => setTimeout(resolve, 6000));
 
-      // 9. Batch upload .eml file + all attachments together (Turbo optimization)
-      const filesToUpload = [];
-
-      // Add .eml file to batch
-      if (emlFile) {
-        filesToUpload.push({
-          filepath: emlFile.filepath,
-          filename: emlFile.filename
-        });
+      // 9. Upload .eml file to email folder
+      if (!emlFile) {
+        throw new Error('No .eml file to upload');
       }
 
-      // Add all attachments to batch
-      for (const attachment of attachments) {
-        filesToUpload.push({
-          filepath: attachment.filepath,
-          filename: attachment.filename
-        });
-      }
-
-      // Upload ALL files in ONE Turbo transaction
-      logger.info({ fileCount: filesToUpload.length }, 'Batch uploading files to email folder');
+      logger.info('Uploading .eml file to email folder');
       const uploadResults = await uploadFilesToFolder(
         driveInfo.driveId,
         emailFolderId,
-        filesToUpload,
+        [{
+          filepath: emlFile.filepath,
+          filename: emlFile.filename
+        }],
         driveInfo.drivePassword
       );
-      logger.info({ uploadedCount: uploadResults.length }, 'Batch upload complete');
 
-      // Separate .eml result from attachment results
-      let emlUploadResult = null;
-      const attachmentResults = [];
-
-      let resultIndex = 0;
-
-      if (emlFile) {
-        const emlResult = uploadResults[resultIndex++];
-        if (!emlResult) {
-          throw new Error('.eml file upload failed - no result returned');
-        }
-        emlUploadResult = emlResult;
-        logger.info({ entityId: emlResult.entityId }, '.eml file uploaded');
+      const emlUploadResult = uploadResults[0];
+      if (!emlUploadResult) {
+        throw new Error('.eml file upload failed - no result returned');
       }
+      logger.info({ entityId: emlUploadResult.entityId }, '.eml file uploaded');
 
-      for (const attachment of attachments) {
-        const result = uploadResults[resultIndex++];
-        if (!result) {
-          throw new Error(`Attachment upload failed for ${attachment.filename}`);
-        }
-        attachmentResults.push({
-          ...result,
-          sizeBytes: attachment.sizeBytes,
-          contentType: attachment.contentType
-        });
-        logger.info({ filename: attachment.filename, entityId: result.entityId }, 'Attachment uploaded');
-      }
+      // 10. Record .eml upload in database
+      await db.insert(uploads).values({
+        userId: user.id,
+        emailMessageId: email.messageId || null,
+        fileName: emlUploadResult.fileName,
+        sizeBytes: emlFile.sizeBytes,
+        contentType: 'message/rfc822',
+        status: 'completed',
+        driveId: driveInfo.driveId,
+        entityId: emlUploadResult.entityId,
+        dataTxId: emlUploadResult.dataTxId || null,
+        fileKey: emlUploadResult.fileKey || null,
+        emailFolderEntityId: emailFolderId,
+        completedAt: new Date(),
+      });
 
-      // 11. Record uploads in database
-      for (const result of attachmentResults) {
-        await db.insert(uploads).values({
-          userId: user.id,
-          emailMessageId: email.messageId || null,
-          fileName: result.fileName,
-          sizeBytes: result.sizeBytes,
-          contentType: result.contentType,
-          status: 'completed',
-          driveId: driveInfo.driveId,
-          entityId: result.entityId,
-          dataTxId: result.dataTxId || null,
-          fileKey: result.fileKey || null,
-          emailFolderEntityId: emailFolderId,
-          completedAt: new Date(),
-        });
+      await recordUpload(user.id, emlFile.sizeBytes);
 
-        await recordUpload(user.id, result.sizeBytes);
-      }
-
-      // 12. Update processedEmails with folder and .eml info
+      // 11. Update processedEmails with folder and .eml info
       await db.update(processedEmails)
         .set({
           folderEntityId: emailFolderId,
           folderName: emailFolderName,
-          emlFileEntityId: emlUploadResult?.entityId || null,
-          emlFileKey: emlUploadResult?.fileKey || null,
+          emlFileEntityId: emlUploadResult.entityId,
+          emlFileKey: emlUploadResult.fileKey || null,
         })
         .where(eq(processedEmails.uid, uid));
 
-      // 13. Send confirmation email
+      // 12. Send confirmation email
       const summary = await getUsageSummary(user.id);
 
-      const fileResults = attachmentResults.map(r => ({
-        fileName: r.fileName,
-        entityId: r.entityId,
-        dataTxId: r.dataTxId,
-        fileKey: r.fileKey,
-      }));
-
-      const emlInfo = emlUploadResult ? {
+      const emlInfo = {
         fileName: emlUploadResult.fileName,
         entityId: emlUploadResult.entityId,
         fileKey: emlUploadResult.fileKey,
-      } : null;
+      };
 
       await sendUploadConfirmation(
         from,
-        fileResults,
         emlInfo,
         subject || 'No Subject',
         summary
       );
 
-      logger.info({ userId: user.id, fileCount: attachmentResults.length, hasEml: !!emlInfo }, 'Confirmation email sent');
+      logger.info({ userId: user.id }, 'Confirmation email sent');
 
       // 14. Clean up temp files
       for (const filepath of tempFiles) {
@@ -629,39 +572,6 @@ export class EmailProcessor {
     }
   }
 
-  private async saveAttachments(email: ParsedMail, uid: number): Promise<SavedAttachment[]> {
-    const tmpDir = join(process.cwd(), 'tmp');
-
-    // Ensure tmp directory exists
-    try {
-      mkdirSync(tmpDir, { recursive: true });
-    } catch (error) {
-      // Directory might already exist
-    }
-
-    const saved: SavedAttachment[] = [];
-
-    if (!email.attachments || email.attachments.length === 0) {
-      return saved;
-    }
-
-    for (const attachment of email.attachments) {
-      const filename = attachment.filename || `attachment-${Date.now()}`;
-      const filepath = join(tmpDir, `${uid}-${filename}`);
-
-      writeFileSync(filepath, attachment.content);
-
-      saved.push({
-        filepath,
-        filename,
-        contentType: attachment.contentType || 'application/octet-stream',
-        sizeBytes: attachment.size,
-      });
-    }
-
-    return saved;
-  }
-
   private async saveEmailAsEml(
     uid: number,
     emailDate: Date,
@@ -690,10 +600,10 @@ export class EmailProcessor {
       const emailSource = message.source;
       const sizeBytes = Buffer.byteLength(emailSource);
 
-      // Check 1GB limit
-      const ONE_GB = 1024 * 1024 * 1024;
-      if (sizeBytes > ONE_GB) {
-        logger.warn({ uid, sizeBytes, limit: ONE_GB }, 'Email exceeds 1GB limit, skipping .eml save');
+      // Check 50MB limit
+      const FIFTY_MB = 50 * 1024 * 1024;
+      if (sizeBytes > FIFTY_MB) {
+        logger.warn({ uid, sizeBytes, limit: FIFTY_MB }, 'Email exceeds 50MB limit, skipping .eml save');
         return null;
       }
 

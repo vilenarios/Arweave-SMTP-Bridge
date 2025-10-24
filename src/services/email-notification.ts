@@ -38,59 +38,17 @@ export interface UsageSummary {
  */
 export async function sendUploadConfirmation(
   to: string,
-  files: UploadedFile[],
-  emlFile: EmlFileInfo | null,
+  emlFile: EmlFileInfo,
   emailSubject: string,
   usage: UsageSummary
 ): Promise<void> {
   try {
-    // Build .eml file section (fileKey is already base64url encoded, don't encode again)
-    const emlSection = emlFile ? `
-      <div style="margin-bottom: 30px; border-bottom: 2px solid #e0e0e0; padding-bottom: 20px;">
-        <h2 style="margin: 0 0 15px 0; font-size: 18px; color: #333;">📧 Full Email Backup</h2>
-        <div style="background-color: #f7f9fc; padding: 15px; border-radius: 8px;">
-          <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>${emlFile.fileName}</strong></p>
-          <p style="margin: 0; font-size: 13px; font-family: monospace; word-break: break-all;">
-            <a href="https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}" target="_blank" style="color: #0066cc;">
-              🔗 Download .eml file
-            </a>
-          </p>
-          <p style="margin: 10px 0 0 0; font-size: 12px; color: #666;">
-            <em>Import this file into any email client (Gmail, Outlook, Thunderbird, etc.)</em>
-          </p>
-        </div>
-      </div>
-    ` : '';
-
-    // Build file list HTML with proper private file sharing links (fileKey is already base64url encoded)
-    const fileListHtml = files.length > 0 ? `
-      <div style="margin-bottom: 30px;">
-        <h2 style="margin: 0 0 15px 0; font-size: 18px; color: #333;">📎 Attachments (${files.length})</h2>
-        ${files.map(file => {
-          // For private files, use sharing link with fileKey parameter (don't encode, it's already base64url)
-          const fileLink = file.fileKey
-            ? `https://app.ardrive.io/#/file/${file.entityId}/view?fileKey=${file.fileKey}`
-            : `https://app.ardrive.io/#/file/${file.entityId}/view`;
-
-          return `
-            <div style="margin-bottom: 15px; padding: 15px; background-color: #f7f9fc; border-radius: 8px;">
-              <p style="margin: 0 0 8px 0; font-size: 14px;"><strong>${file.fileName}</strong></p>
-              <p style="margin: 0; font-size: 13px; font-family: monospace; word-break: break-all;">
-                <a href="${fileLink}" target="_blank" style="color: #0066cc;">🔗 View/Download</a>
-              </p>
-            </div>
-          `;
-        }).join('')}
-      </div>
-    ` : '';
+    const subjectDisplay = emailSubject || 'No Subject';
 
     // Usage summary
     const usageCostText = usage.costThisMonth > 0
       ? `<p style="margin: 8px 0 0 0;">Cost this month: <strong>$${usage.costThisMonth.toFixed(2)}</strong></p>`
       : '';
-
-    const totalAttachments = files.length;
-    const subjectDisplay = emailSubject || 'No Subject';
 
     const htmlBody = `
       <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; color: #333;">
@@ -99,12 +57,22 @@ export async function sendUploadConfirmation(
           <p style="color: #666; margin-top: 8px; font-size: 16px;">
             "${subjectDisplay}"
           </p>
-          ${totalAttachments > 0 ? `<p style="color: #999; margin-top: 4px; font-size: 14px;">${totalAttachments} attachment${totalAttachments > 1 ? 's' : ''}</p>` : ''}
         </div>
 
-        ${emlSection}
-
-        ${fileListHtml}
+        <div style="margin-bottom: 30px;">
+          <h2 style="margin: 0 0 15px 0; font-size: 18px; color: #333;">📧 Complete Email Archive</h2>
+          <div style="background-color: #f7f9fc; padding: 15px; border-radius: 8px;">
+            <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>${emlFile.fileName}</strong></p>
+            <p style="margin: 0 0 10px 0; font-size: 13px; font-family: monospace; word-break: break-all;">
+              <a href="https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}" target="_blank" style="color: #0066cc; text-decoration: none; font-weight: 500;">
+                🔗 Download Email Archive (.eml)
+              </a>
+            </p>
+            <p style="margin: 10px 0 0 0; font-size: 12px; color: #666; line-height: 1.5;">
+              <em>This .eml file contains your complete email including all attachments. Import it into any email client (Gmail, Outlook, Thunderbird, etc.) to access everything.</em>
+            </p>
+          </div>
+        </div>
 
         <div style="background-color: #f0f0f0; padding: 15px; border-radius: 8px; margin-top: 30px;">
           <p style="margin: 0; font-size: 14px; color: #666;"><strong>Usage This Month:</strong></p>
@@ -119,30 +87,16 @@ export async function sendUploadConfirmation(
       </div>
     `;
 
-    // Build text version
-    const emlTextSection = emlFile ? `
-📧 Full Email Backup:
-${emlFile.fileName}
-🔗 https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}
-Import this file into any email client (Gmail, Outlook, Thunderbird, etc.)
-
-` : '';
-
-    const filesTextSection = files.length > 0 ? `
-📎 Attachments (${files.length}):
-${files.map(f => {
-  const link = f.fileKey
-    ? `https://app.ardrive.io/#/file/${f.entityId}/view?fileKey=${f.fileKey}`
-    : `https://app.ardrive.io/#/file/${f.entityId}/view`;
-  return `- ${f.fileName}\n  🔗 ${link}`;
-}).join('\n')}
-
-` : '';
-
     const textBody = `
 📬 Email Archived: "${subjectDisplay}"
 
-${emlTextSection}${filesTextSection}
+📧 Complete Email Archive:
+${emlFile.fileName}
+🔗 https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}
+
+This .eml file contains your complete email including all attachments.
+Import it into any email client (Gmail, Outlook, Thunderbird, etc.) to access everything.
+
 Usage this month:
 - Total emails: ${usage.uploadsThisMonth}
 - Free: ${usage.freeEmailsUsed}
@@ -157,12 +111,12 @@ ForwARd by ArDrive
     await transporter.sendMail({
       from: config.EMAIL_USER,
       to,
-      subject: `Email archived: "${subjectDisplay}"${totalAttachments > 0 ? ` (${totalAttachments} attachment${totalAttachments > 1 ? 's' : ''})` : ''}`,
+      subject: `Email archived: "${subjectDisplay}"`,
       text: textBody,
       html: htmlBody,
     });
 
-    logger.info({ to, fileCount: files.length, hasEml: !!emlFile }, 'Confirmation email sent');
+    logger.info({ to }, 'Confirmation email sent');
   } catch (error) {
     logger.error({ error, to }, 'Failed to send confirmation email');
     throw error;
