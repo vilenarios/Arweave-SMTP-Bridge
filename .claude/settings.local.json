@@ -18,7 +18,12 @@
       "Bash(redis-cli:*)",
       "Bash(bunx drizzle-kit:*)",
       "Bash(git add:*)",
-      "Bash(timeout 15 bun run:*)"
+      "Bash(timeout 15 bun run:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nUpdate documentation with hierarchical archiving and performance improvements\n\n- Add new database schema details (drive_folders, updated fields)\n- Document hierarchical folder structure (Year/Month/Email)\n- Document .eml email backup feature (RFC 822, 1GB limit)\n- Document two-email system (welcome vs confirmation)\n- Document batch upload improvements (uploadFilesToFolder)\n- Document performance optimizations (6s waits instead of 10s)\n- Document error handling improvements (cache fallback, user notifications)\n- Update all service descriptions with new functions\n- Update upload flow with detailed folder creation steps\n- Add comprehensive ArDrive integration details\n- Update implementation notes with critical performance patterns\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(rm:*)",
+      "Bash(git reset:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nClean up legacy and archived code\n\nRemoved files:\n- archive/ directory (all old implementations)\n- src/services/email-upload.ts (old monolithic processor)\n- src/services/arweave-upload.ts (legacy Turbo/Arweave.js)\n- src/services/ardrive-upload.ts (old ArDrive v2)\n- src/services/user-manager.ts (old user management with broken GraphQL)\n- src/services/crypto.ts (duplicate, use utils/crypto.ts)\n- src/services/__tests__/ (tests for deleted services)\n\nChanges:\n- Moved UploadedFileInfo interface to email-responses.ts\n- Updated CLAUDE.md to remove legacy code documentation\n- Updated testing strategy section\n\nThe codebase now only contains production code in use:\n- email-processor.ts (current email processing)\n- imap-service.ts (email monitoring)\n- ardrive-storage.ts (ArDrive v3 with Turbo)\n- user-service.ts (user management)\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(node -e:*)"
     ],
     "deny": [],
     "ask": []

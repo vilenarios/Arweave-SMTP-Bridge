@@ -430,7 +430,8 @@ export class EmailProcessor {
         emailFolderId,
         [{
           filepath: emlFile.filepath,
-          filename: emlFile.filename
+          filename: emlFile.filename,
+          contentType: 'message/rfc822' // Proper MIME type for .eml files
         }],
         driveInfo.drivePassword
       );

@@ -138,7 +138,12 @@ export async function uploadFilesToArDrive(
   for (const file of files) {
     const filepath = path.resolve(file.filepath);
     const filename = file.filename || path.basename(filepath);
-    const wrapped = await wrapFileOrFolder(filepath);
+
+    // Pass content-type to wrapFileOrFolder for proper MIME type tagging
+    const wrapped = await wrapFileOrFolder(
+      filepath,
+      file.contentType || 'application/octet-stream'
+    );
 
     const entity: ArDriveUploadStats = {
       wrappedEntity: wrapped,
@@ -325,7 +330,7 @@ export async function getDriveShareKey(
 export async function uploadFilesToFolder(
   driveId: string,
   folderId: string,
-  files: Array<{ filepath: string; filename: string }>,
+  files: Array<{ filepath: string; filename: string; contentType?: string }>,
   drivePassword?: string
 ): Promise<UploadResult[]> {
   if (files.length === 0) {
@@ -358,7 +363,12 @@ export async function uploadFilesToFolder(
 
   for (const file of files) {
     const resolvedPath = path.resolve(file.filepath);
-    const wrapped = await wrapFileOrFolder(resolvedPath);
+
+    // Pass content-type to wrapFileOrFolder for proper MIME type tagging
+    const wrapped = await wrapFileOrFolder(
+      resolvedPath,
+      file.contentType || 'application/octet-stream' // Default to octet-stream if not specified
+    );
 
     const entity: ArDriveUploadStats = {
       wrappedEntity: wrapped,
