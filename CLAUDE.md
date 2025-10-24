@@ -87,6 +87,8 @@ src/
 ├── services/
 │   ├── user-service.ts               # User management + allowlist
 │   ├── usage-service.ts              # Billing + usage tracking
+│   ├── wallet-service.ts             # Per-user wallet generation (multi mode)
+│   ├── credit-service.ts             # Turbo credit sharing (multi mode)
 │   ├── imap-service.ts               # IMAP monitoring with ImapFlow
 │   ├── email-notification.ts         # Send confirmation/error emails
 │   ├── email-responses.ts            # Email template generation
@@ -107,6 +109,8 @@ src/
 
 **users** - User accounts
 - id, email, emailVerified, allowed (allowlist), plan (free/paid), stripeCustomerId
+- userWalletAddress, userWalletSeedPhraseEncrypted, userWalletJwkEncrypted (multi-wallet mode)
+- seedPhraseDownloadedAt (tracks if user exported seed phrase)
 
 **uploads** - Track every file upload
 - id, userId, fileName, sizeBytes, contentType, status (pending/processing/completed/failed)
@@ -137,6 +141,11 @@ src/
 - folderEntityId (email folder in ArDrive), emlFileEntityId (.eml file entity), emlFileKey (file key for .eml)
 - folderName (human-readable folder name)
 
+**credit_shares** - Turbo credit sharing records (multi-wallet mode only)
+- id, userId, approvalDataItemId (from turbo.shareCredits())
+- approvedWincAmount (credits shared in winc, 1 Credit = 1e12 winc)
+- status (active/expired/revoked), createdAt, expiresAt (30 days), revokedAt
+
 ### Key Services
 
 #### User Service (`src/services/user-service.ts`)
@@ -152,12 +161,33 @@ src/
 - `recordUpload(userId, sizeBytes)` - Record upload and calculate cost
 - `getUsageSummary(userId)` - Get usage for display ("5/10 free emails used")
 
+#### Wallet Service (`src/services/wallet-service.ts`) - Multi-Wallet Mode Only
+- `generateUserWallet()` - Generate new Arweave wallet with 12-word seed phrase
+- `storeUserWallet(userId, address, seedPhrase, jwk)` - Store encrypted wallet in database
+- `getUserWallet(userId)` - Get decrypted user wallet (JWK only, no seed phrase)
+- `getUserSeedPhrase(userId)` - Get decrypted seed phrase (marks as downloaded)
+- `getOrCreateUserWallet(userId)` - Get existing or create new wallet (returns null in single mode)
+- Uses ardrive-core-js `WalletDAO` for generation
+- Seed phrase and JWK stored encrypted with AES-256-GCM
+- Wallet address shown in welcome email
+
+#### Credit Service (`src/services/credit-service.ts`) - Multi-Wallet Mode Only
+- `ensureUserHasCredits(userId, userAddress, requiredWinc)` - Just-in-time credit allocation
+- `shareCreditsWith(userAddress, wincAmount)` - Share credits via Turbo with 30-day expiration
+- `revokeCreditFor(userAddress)` - Revoke all credits for user
+- `revokeUserCredits(userId)` - Revoke and mark in database
+- Checks user wallet balance before sharing more credits
+- Calculates credits based on remaining email allowance (3MB average × emails remaining)
+- Records all shares in `credit_shares` table with expiration tracking
+
 #### ArDrive Storage (`src/storage/ardrive-storage.ts`)
 - `uploadFilesToArDrive(userId, files, options)` - Upload files to ArDrive with Turbo (creates drive if needed)
-- `createFolderInDrive(driveId, folderName, parentFolderId, drivePassword?)` - Create folder in existing drive
+- `createFolderInDrive(driveId, folderName, parentFolderId, drivePassword?, userJwk?)` - Create folder in existing drive
 - `getDriveShareKey(driveId, drivePassword)` - Derive base64-encoded drive key for sharing URLs
-- `uploadFilesToFolder(driveId, folderId, files[], drivePassword?)` - **Batch upload multiple files in ONE Turbo transaction**
-- `uploadFileToFolder(driveId, folderId, filepath, filename, drivePassword?)` - Upload single file (wraps batch function)
+- `uploadFilesToFolder(driveId, folderId, files[], drivePassword?, userJwk?)` - **Batch upload multiple files in ONE Turbo transaction**
+- `uploadFileToFolder(driveId, folderId, filepath, filename, drivePassword?, userJwk?)` - Upload single file (wraps batch function)
+- All functions accept optional `userJwk` parameter (for multi-wallet mode)
+- Falls back to master wallet if `userJwk` not provided
 - Handles both private (encrypted) and public uploads
 - Returns entityId, dataTxId, fileKey for each file
 
@@ -203,18 +233,36 @@ Environment variables (validated on startup with Zod):
 
 **Required**:
 - `EMAIL_USER` / `EMAIL_PASSWORD` - Gmail IMAP/SMTP credentials
-- `ARWEAVE_JWK_PATH` - Path to Arweave wallet JWK file
+- `ARWEAVE_JWK_PATH` - Path to Arweave wallet JWK file (master wallet)
 - `ENCRYPTION_KEY` - 64-char hex string for encrypting drive passwords (auto-generated in .env)
 - `API_KEY_SECRET` - 32+ char secret for API keys
 - `FORWARD_ALLOWED_EMAILS` - Comma-separated allowlist (supports `*@domain.com`)
 
 **Optional**:
+- `WALLET_MODE` - 'single' (default) or 'multi' (per-user wallets with credit sharing)
 - `DATABASE_URL` - Defaults to `./data/forward.db`
 - `REDIS_URL` - Defaults to `redis://localhost:6379`
 - `LOG_LEVEL` - info, debug, warn, error (default: info)
 - `FREE_EMAILS_PER_MONTH` - Default: 10
 - `COST_PER_EMAIL` - Default: 0.10 (USD)
 - `STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` - For payment processing
+
+### Wallet Modes
+
+**Single Wallet Mode** (`WALLET_MODE=single`, default):
+- All uploads use master wallet specified in `ARWEAVE_JWK_PATH`
+- Simpler setup, no per-user wallet management
+- All storage costs charged to master wallet
+- **Use for**: Personal use, small teams with centralized billing
+
+**Multi-Wallet Mode** (`WALLET_MODE=multi`):
+- Each user gets own Arweave wallet (auto-generated on first upload)
+- Wallets created via ardrive-core-js `WalletDAO` (12-word seed phrase)
+- Master wallet shares Turbo credits with 30-day expiration (just-in-time allocation)
+- Perfect isolation between users
+- Seed phrase + JWK stored encrypted in database
+- Wallet address shown in welcome email
+- **Use for**: Production SaaS, multi-tenant deployments
 
 ### Upload Flow (Current Architecture)
 
@@ -238,37 +286,42 @@ Environment variables (validated on startup with Zod):
    - Get or create user + private drive
    - If new drive: derive and store drive key, wait 6s for indexing
                     ↓
-6. Usage Check (usage-service.ts)
+6. Handle Wallet Mode (wallet-service.ts, credit-service.ts)
+   - Single mode: Use master wallet for uploads
+   - Multi mode: Get or create per-user wallet, ensure credits via just-in-time allocation
+                    ↓
+7. Usage Check (usage-service.ts)
    - Verify within free tier (10/month)
    - If exceeded, send limit email and stop
                     ↓
-7. Create Hierarchical Folder Structure (email-processor.ts)
+8. Create Hierarchical Folder Structure (email-processor.ts)
    - Get/create Year folder (e.g., "2025") - cache-first pattern
    - Get/create Month folder (e.g., "01") - cache-first pattern
    - Create Email folder (YYYY-MM-DD_HH-MM-SS_Subject)
    - Wait 6s after each folder creation for ArDrive indexing
                     ↓
-8. Save Email and Attachments to tmp/ directory
+9. Save Email and Attachments to tmp/ directory
    - Save full email as .eml file (RFC 822 format, max 1GB)
    - Save all attachments
                     ↓
-9. Batch Upload to ArDrive (ardrive-storage.ts)
-   - Upload .eml + ALL attachments in ONE Turbo transaction
-   - Upload to email folder via uploadFilesToFolder()
-   - Returns: entityId, dataTxId, fileKey for each file
+10. Batch Upload to ArDrive (ardrive-storage.ts)
+    - Upload .eml + ALL attachments in ONE Turbo transaction
+    - Upload to email folder via uploadFilesToFolder()
+    - Uses user wallet in multi mode, master wallet in single mode
+    - Returns: entityId, dataTxId, fileKey for each file
                     ↓
-10. Update Database
+11. Update Database
     - Insert upload records for each file (uploads table)
     - Update processedEmails with folder/file IDs
     - Record usage for billing (usage table)
                     ↓
-11. Send Email Notifications (email-notification.ts)
-    - If first upload: send welcome email with drive sharing link
+12. Send Email Notifications (email-notification.ts)
+    - If first upload: send welcome email with drive sharing link (+ wallet address in multi mode)
     - Send confirmation email with file sharing links
     - Separate sections for .eml file and attachments
     - If final failure: send error notification
                     ↓
-12. Cleanup
+13. Cleanup
     - Delete temp files
     - Mark email as 'completed' in processedEmails
 ```
