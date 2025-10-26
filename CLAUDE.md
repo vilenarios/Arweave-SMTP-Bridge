@@ -89,7 +89,9 @@ src/
 │   ├── usage-service.ts              # Billing + usage tracking
 │   ├── wallet-service.ts             # Per-user wallet generation (multi mode)
 │   ├── credit-service.ts             # Turbo credit sharing (multi mode)
-│   ├── imap-service.ts               # IMAP monitoring with ImapFlow
+│   ├── imap-service.ts               # IMAP monitoring with ImapFlow + OAuth2
+│   ├── oauth2-service.ts             # Microsoft 365 OAuth2 token management
+│   ├── health-server.ts              # HTTP health check endpoint
 │   ├── email-notification.ts         # Send confirmation/error emails
 │   ├── email-responses.ts            # Email template generation
 │   ├── file-prep.ts                  # Attachment handling utilities
@@ -101,7 +103,10 @@ src/
 ├── storage/
 │   └── ardrive-storage.ts            # ArDrive v3 uploads with Turbo
 ├── utils/
-│   └── crypto.ts                     # AES-256-GCM encryption
+│   ├── crypto.ts                     # AES-256-GCM encryption
+│   └── email-security.ts             # DKIM/SPF email authentication
+├── scripts/
+│   └── backup-database.sh            # Automated database backups
 └── index.ts                          # Entry point + graceful shutdown
 ```
 
@@ -191,12 +196,40 @@ src/
 - Handles both private (encrypted) and public uploads
 - Returns entityId, dataTxId, fileKey for each file
 
+#### OAuth2 Service (`src/services/oauth2-service.ts`)
+- `getAccessToken()` - Get current access token (refreshes if expired)
+- `refreshAccessToken()` - Manually refresh OAuth2 token
+- Automatically refreshes tokens 5 minutes before expiration
+- Supports Microsoft 365 OAuth2 flow
+- Required for preserve@ardrive.io Microsoft 365 account
+- Token refresh uses client credentials + refresh token
+
 #### IMAP Service (`src/services/imap-service.ts`)
 - `start()` / `stop()` - Manage IMAP connection lifecycle
+- Supports both password and OAuth2 authentication
 - Polls inbox every 30 seconds for new emails (last 7 days)
 - Auto-reconnect with exponential backoff on disconnect
 - Queues new emails via BullMQ for async processing
 - Tracks processed emails in database to prevent duplicates
+- OAuth2 token auto-refreshed when needed
+
+#### Health Server (`src/services/health-server.ts`)
+- HTTP server for monitoring application health
+- `GET /health` - Full health status JSON (database, Redis, IMAP, queue stats, uptime)
+- `GET /ping` - Simple ping/pong endpoint for uptime monitors
+- Status codes: 200 (healthy), 207 (degraded), 503 (unhealthy)
+- Configurable port via `HEALTH_PORT` env var (default: 3000)
+- CORS enabled for browser access
+- Injectable IMAP health check via `setImapHealthCheck()`
+
+#### Email Security (`src/utils/email-security.ts`)
+- `verifyEmailAuthentication(email, sender)` - Verify DKIM/SPF/DMARC
+- `shouldEnforceAuthentication()` - Check if enforcement is enabled
+- Parses Authentication-Results header
+- Requires either DKIM OR SPF to pass
+- Only enforced in production (or with `ENFORCE_EMAIL_AUTH=true`)
+- Prevents email spoofing attacks
+- Logs detailed authentication results
 
 #### Email Notification Service (`src/services/email-notification.ts`)
 - `sendDriveWelcomeEmail(to, driveId, driveKeyBase64, userEmail)` - Send welcome email with drive sharing link (sent once per user)
@@ -215,7 +248,8 @@ src/
 
 #### Email Processor (`src/jobs/processors/email-processor.ts`)
 - BullMQ worker that processes queued emails
-- Fetches full email content via IMAP
+- Fetches full email content via IMAP (supports OAuth2)
+- **Verifies email authentication (DKIM/SPF)** before processing (production only)
 - Validates user authorization and usage limits
 - Creates hierarchical folder structure (Year > Month > Email)
 - Saves full email as .eml file (RFC 822 format, max 1GB)
@@ -232,14 +266,24 @@ src/
 Environment variables (validated on startup with Zod):
 
 **Required**:
-- `EMAIL_USER` / `EMAIL_PASSWORD` - Gmail IMAP/SMTP credentials
+- `EMAIL_USER` - Email address for IMAP/SMTP
+- `EMAIL_PASSWORD` - Email password or app password (optional if using OAuth2)
 - `ARWEAVE_JWK_PATH` - Path to Arweave wallet JWK file (master wallet)
 - `ENCRYPTION_KEY` - 64-char hex string for encrypting drive passwords (auto-generated in .env)
 - `API_KEY_SECRET` - 32+ char secret for API keys
 - `FORWARD_ALLOWED_EMAILS` - Comma-separated allowlist (supports `*@domain.com`)
 
+**OAuth2 (Optional - for Microsoft 365)**:
+- `OAUTH_CLIENT_ID` - Azure AD application client ID
+- `OAUTH_CLIENT_SECRET` - Azure AD application client secret
+- `OAUTH_TENANT_ID` - Azure AD tenant ID
+- `OAUTH_REFRESH_TOKEN` - OAuth2 refresh token (generated via `get-oauth-token.ts`)
+- Note: Either `EMAIL_PASSWORD` OR OAuth2 credentials required (not both)
+
 **Optional**:
 - `WALLET_MODE` - 'single' (default) or 'multi' (per-user wallets with credit sharing)
+- `HEALTH_PORT` - Port for health check endpoint (default: 3000)
+- `ENFORCE_EMAIL_AUTH` - Set to 'true' to enforce DKIM/SPF in development (default: production only)
 - `DATABASE_URL` - Defaults to `./data/forward.db`
 - `REDIS_URL` - Defaults to `redis://localhost:6379`
 - `LOG_LEVEL` - info, debug, warn, error (default: info)
@@ -386,6 +430,33 @@ Environment variables (validated on startup with Zod):
 - **No hardcoded secrets** (validated at startup)
 - **WAL mode** on SQLite for concurrent access
 
+### Security Features
+
+**Email Authentication (Anti-Spoofing)**:
+- DKIM/SPF verification via `src/utils/email-security.ts`
+- Checks Authentication-Results header from email server
+- Requires either DKIM OR SPF to pass
+- **Production enforcement**: Rejects spoofed emails automatically
+- **Development mode**: Logs verification results but doesn't reject
+- Override with `ENFORCE_EMAIL_AUTH=true` for testing
+
+**Automated Database Backups**:
+- Script: `scripts/backup-database.sh` (executable)
+- Uses SQLite's `.backup` command for atomic consistency
+- Timestamped backups: `forward-backup-YYYYMMDD-HHMMSS.db`
+- Keeps last 30 backups (automatic rotation)
+- Cron schedule: Every 6 hours (`0 */6 * * *`)
+- Logs to: `logs/backup.log`
+- Manual run: `./scripts/backup-database.sh`
+
+**Health Monitoring**:
+- HTTP endpoint: `http://localhost:3000/health` (or custom `HEALTH_PORT`)
+- Monitors: Database, Redis, IMAP connection, queue metrics
+- Status codes: 200 (healthy), 207 (degraded), 503 (unhealthy)
+- Simple ping: `http://localhost:3000/ping` returns "pong"
+- Graceful shutdown: Health server stops first (no longer reports healthy)
+- Use with: UptimeRobot, Healthchecks.io, Datadog, etc.
+
 ### Application Startup Flow
 
 When you run `bun start` or `bun run dev`, the application (`index.ts`) starts in this order:
@@ -393,13 +464,15 @@ When you run `bun start` or `bun run dev`, the application (`index.ts`) starts i
 1. **Load & Validate Configuration** - Zod validates all env vars (fails fast if invalid)
 2. **Initialize Database** - Connect to SQLite, ensure migrations are run
 3. **Start Email Processor Worker** - BullMQ worker connects to Redis, ready to process jobs
-4. **Start IMAP Service** - Connect to email inbox, begin polling for new emails
-5. **Graceful Shutdown Handlers** - Register SIGTERM/SIGINT handlers for clean shutdown
+4. **Start IMAP Service** - Connect to email inbox (OAuth2 or password), begin polling for new emails
+5. **Start Health Check Server** - HTTP server on `HEALTH_PORT` (default: 3000)
+6. **Graceful Shutdown Handlers** - Register SIGTERM/SIGINT handlers for clean shutdown
 
 **Shutdown Order** (reverse of startup):
-1. Stop IMAP service (prevents new emails from being queued)
-2. Stop email processor (allows current jobs to finish)
-3. Close queue connections (Redis)
+1. Stop health server (no longer report as healthy)
+2. Stop IMAP service (prevents new emails from being queued)
+3. Stop email processor (allows current jobs to finish)
+4. Close queue connections (Redis)
 
 ### Common Development Tasks
 
@@ -523,6 +596,12 @@ See `DEPLOYMENT.md` for detailed deployment guide.
 - Check `FORWARD_ALLOWED_EMAILS` in `.env`
 - Supports exact match or wildcard: `*@example.com`
 
+**"Email failed authentication"** (Production only)
+- Email failed DKIM/SPF verification
+- Check logs for Authentication-Results header details
+- Verify email is from legitimate sender (not spoofed)
+- To disable temporarily: Set `NODE_ENV=development`
+
 **ArDrive upload fails**
 - Check wallet has sufficient AR balance
 - Check `ARWEAVE_JWK_PATH` points to valid JWK file
@@ -532,6 +611,18 @@ See `DEPLOYMENT.md` for detailed deployment guide.
 - Check Redis is running: `redis-cli ping`
 - View failed jobs in Redis or via BullMQ dashboard
 - Check `processedEmails` table for error messages
+
+**Health endpoint not responding**
+- Check `HEALTH_PORT` in `.env` (default: 3000)
+- Verify port is not in use: `lsof -i :3000`
+- Check application logs for health server startup message
+- Test with: `curl http://localhost:3000/ping`
+
+**OAuth2 token refresh failed**
+- Check `OAUTH_REFRESH_TOKEN` is valid (doesn't expire in Microsoft 365)
+- Verify `OAUTH_CLIENT_ID`, `OAUTH_CLIENT_SECRET`, `OAUTH_TENANT_ID` are correct
+- Re-run `bun run get-oauth-token.ts` to get fresh refresh token
+- Check Azure AD app permissions (IMAP.AccessAsUser.All, SMTP.Send, offline_access)
 
 ### Monitoring and Debugging
 

@@ -540,6 +540,65 @@ du -sh ./data/
 redis-cli INFO memory
 ```
 
+### Health Check Endpoint
+
+ForwARd includes a built-in health check endpoint for monitoring:
+
+```bash
+# Test health endpoint
+curl http://localhost:3000/health
+
+# Example response:
+{
+  "status": "healthy",
+  "timestamp": "2025-10-26T04:19:38.152Z",
+  "services": {
+    "database": true,
+    "redis": true,
+    "imap": true
+  },
+  "queue": {
+    "waiting": 0,
+    "active": 0,
+    "failed": 0
+  },
+  "uptime": 17.170568175
+}
+
+# Simple ping endpoint
+curl http://localhost:3000/ping
+# Returns: pong
+```
+
+**Status Codes:**
+- `200` - All services healthy
+- `207` - Some services degraded (still functioning)
+- `503` - Service unhealthy (critical failure)
+
+**Configure Port:**
+```bash
+# Add to .env if default port 3000 is in use
+HEALTH_PORT=3001
+```
+
+**Integrate with Monitoring Tools:**
+
+UptimeRobot:
+- URL: `http://your-server:3000/ping`
+- Interval: 5 minutes
+- HTTP Method: GET
+- Expected HTTP Status: 200
+
+Healthchecks.io:
+```bash
+# Add to crontab (every 5 minutes)
+*/5 * * * * curl -fsS --retry 3 http://localhost:3000/ping > /dev/null && curl -fsS --retry 3 https://hc-ping.com/your-uuid
+```
+
+Datadog/New Relic:
+- HTTP check on `/health` endpoint
+- Parse JSON response for detailed metrics
+
 ---
 
 ## Troubleshooting
@@ -678,13 +737,36 @@ sudo systemctl start forward
 
 ### Automated Backups
 
+ForwARd includes an automated backup script that should be configured during deployment:
+
 ```bash
-# Add to crontab
+# The backup script is already created at:
+# scripts/backup-database.sh
+
+# Make it executable (if not already)
+chmod +x scripts/backup-database.sh
+
+# Test it manually
+./scripts/backup-database.sh
+
+# Check backup was created
+ls -lh backups/
+
+# Add to crontab for automatic backups
 crontab -e
 
-# Add this line (daily backup at 2 AM)
-0 2 * * * cd ~/arweave-smtp-bridge && cp ./data/forward.db ~/backups/forward-$(date +\%Y\%m\%d).db
+# Add this line (every 6 hours)
+0 */6 * * * cd ~/arweave-smtp-bridge && ./scripts/backup-database.sh >> logs/backup.log 2>&1
+
+# Or daily backup at 2 AM:
+# 0 2 * * * cd ~/arweave-smtp-bridge && ./scripts/backup-database.sh >> logs/backup.log 2>&1
 ```
+
+**Backup Script Features:**
+- Uses SQLite's `.backup` command for atomic consistency
+- Timestamped backups: `forward-backup-YYYYMMDD-HHMMSS.db`
+- Automatic rotation (keeps last 30 backups)
+- Logs to `logs/backup.log`
 
 ---
 
@@ -735,9 +817,11 @@ concurrency: 3, // Process 3 emails simultaneously
    - Regular security updates
 
 4. **Email Security**
-   - Use Gmail App Passwords (not regular password)
+   - Use Gmail App Passwords OR OAuth2 (not regular password)
    - Limit allowlist to known addresses
+   - DKIM/SPF verification enabled in production (prevents email spoofing)
    - Monitor for abuse
+   - For Microsoft 365: Use OAuth2 (see Step 4b)
 
 5. **System Security**
    - Keep server updated: `sudo apt-get update && sudo apt-get upgrade`

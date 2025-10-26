@@ -82,6 +82,8 @@ You should see:
 ✅ Email processor worker started
 📧 Starting IMAP service...
 ✅ IMAP service started
+🏥 Starting health check server...
+✅ Health check server started on port 3000
 
 🎉 ForwARd is running!
 📬 Monitoring inbox for new emails...
@@ -169,6 +171,82 @@ Click the "View Your Drive" link in the confirmation email to see your files on 
 - Should fail during user validation
 - Check logs for "Email not in allowlist" error
 
+### Test 6: Health Check Endpoint
+
+Test the health monitoring endpoint:
+
+```bash
+# Test health endpoint
+curl http://localhost:3000/health
+
+# Expected response (when healthy):
+{
+  "status": "healthy",
+  "timestamp": "2025-10-26T04:19:38.152Z",
+  "services": {
+    "database": true,
+    "redis": true,
+    "imap": true
+  },
+  "queue": {
+    "waiting": 0,
+    "active": 0,
+    "failed": 0
+  },
+  "uptime": 17.170568175
+}
+
+# Test simple ping endpoint
+curl http://localhost:3000/ping
+# Should return: pong
+```
+
+**Status Codes:**
+- `200` - All services healthy
+- `207` - Some services degraded (still functioning)
+- `503` - Service unhealthy (critical failure)
+
+### Test 7: Database Backups
+
+Verify automated backups are working:
+
+```bash
+# Run backup script manually
+./scripts/backup-database.sh
+
+# Check backup was created
+ls -lh backups/
+# Should see: forward-backup-YYYYMMDD-HHMMSS.db
+
+# Verify backup integrity
+sqlite3 backups/forward-backup-*.db "SELECT COUNT(*) FROM users;"
+
+# Check cron job is scheduled (if configured)
+crontab -l | grep backup-database
+```
+
+### Test 8: Email Authentication (DKIM/SPF)
+
+Test email sender verification (production mode only):
+
+```bash
+# Enable authentication enforcement
+echo "ENFORCE_EMAIL_AUTH=true" >> .env
+
+# Restart application
+bun start
+
+# Send test email from allowed address
+# Check logs for authentication verification:
+# "Email authentication verified" - should see DKIM/SPF status
+
+# To test spoofing protection:
+# - Email must fail DKIM and SPF checks
+# - Should be rejected with "Authentication failed" error
+```
+
+**Note:** In development mode, authentication checks are logged but not enforced.
+
 ## Monitoring
 
 ### View Database
@@ -206,9 +284,13 @@ Logs use Pino with pretty printing in development:
 # Filter by module
 bun start | grep "imap"
 bun start | grep "email-processor"
+bun start | grep "health-server"
 
 # Save logs to file
 bun start > logs/app.log 2>&1
+
+# Check backup logs
+tail -f logs/backup.log
 ```
 
 ## Troubleshooting

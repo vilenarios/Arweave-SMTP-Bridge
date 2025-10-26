@@ -18,12 +18,16 @@ ForwARd is an email-to-ArDrive bridge that automatically uploads email attachmen
 - ✉️ **Confirmation emails** - Get ArDrive links and transaction details
 - 🛡️ **Email allowlist** - Restrict access to specific users or domains
 - 👛 **Flexible wallet modes** - Single master wallet or per-user isolated wallets with credit sharing
+- 🔐 **Email authentication** - DKIM/SPF verification prevents email spoofing attacks
+- 💾 **Automated backups** - Database backed up every 6 hours with rotation
+- 🏥 **Health monitoring** - Built-in health check endpoint for uptime monitoring
+- 🔑 **OAuth2 support** - Works with Microsoft 365 (preserve@ardrive.io) and Gmail
 
 ## Requirements
 
 - **Bun runtime** (1.0+)
 - **Redis** (for job queue)
-- **Gmail account** with App Password enabled
+- **Email account** - Gmail with App Password OR Microsoft 365 with OAuth2
 - **Arweave wallet** with AR balance (for storage costs)
 
 ## Quick Start
@@ -73,12 +77,18 @@ nano .env
 **Required environment variables:**
 
 ```bash
-# Email Configuration
+# Email Configuration (Gmail example)
 EMAIL_USER=your-email@gmail.com
-EMAIL_PASSWORD=your-app-specific-password
+EMAIL_PASSWORD=your-app-specific-password  # Optional if using OAuth2
 EMAIL_HOST=imap.gmail.com
 EMAIL_PORT=993
 EMAIL_TLS=true
+
+# OAuth2 Configuration (optional, for Microsoft 365)
+# OAUTH_CLIENT_ID=your-azure-app-client-id
+# OAUTH_CLIENT_SECRET=your-azure-app-secret
+# OAUTH_TENANT_ID=your-azure-tenant-id
+# OAUTH_REFRESH_TOKEN=your-refresh-token
 
 # Arweave Wallet (path to JWK file)
 ARWEAVE_JWK_PATH=./wallet.json
@@ -373,10 +383,13 @@ See [CLAUDE.md](./CLAUDE.md) for detailed schema documentation.
 
 - ✅ **AES-256-GCM encryption** for drive passwords in database
 - ✅ **Email allowlist** prevents unauthorized access
+- ✅ **DKIM/SPF verification** prevents email spoofing attacks
 - ✅ **Zod validation** on all configuration
 - ✅ **Private ArDrive** encryption via ArDrive Core JS
 - ✅ **No hardcoded secrets** - validated at startup
 - ✅ **WAL mode** SQLite for safe concurrent access
+- ✅ **Automated database backups** every 6 hours with 30-day rotation
+- ✅ **Health check endpoint** for monitoring (port 3000, configurable)
 
 ## Roadmap
 
