@@ -51,6 +51,7 @@ export async function uploadFilesToArDrive(
   results: UploadResult[];
   driveId: string;
   rootFolderId: string;
+  driveKeyBase64?: string; // Actual drive key from creation (for private drives)
 }> {
   // Allow empty files array for drive creation only
   if (files.length === 0 && options.driveId) {
@@ -71,6 +72,7 @@ export async function uploadFilesToArDrive(
 
   let { driveId, rootFolderId, drivePassword, driveName } = options;
   const isPrivate = !!drivePassword;
+  let actualDriveKeyBase64: string | undefined;
 
   // Create drive if doesn't exist
   if (!driveId) {
@@ -86,6 +88,16 @@ export async function uploadFilesToArDrive(
         drivePassword,
         walletPrivateKey
       );
+
+      // Extract the ACTUAL drive key from the creation data
+      const actualDriveKey = (newPrivateDriveData as any).driveKey;
+      if (actualDriveKey && actualDriveKey.keyData) {
+        actualDriveKeyBase64 = actualDriveKey.keyData.toString('base64')
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=/g, '');
+        logger.info({ userId, driveKeyPreview: actualDriveKeyBase64.substring(0, 20) }, 'Extracted actual drive key from creation');
+      }
 
       const driveResult = await arDrive.createPrivateDrive({
         driveName,
@@ -127,7 +139,8 @@ export async function uploadFilesToArDrive(
     return {
       results: [],
       driveId,
-      rootFolderId
+      rootFolderId,
+      driveKeyBase64: actualDriveKeyBase64
     };
   }
 
@@ -232,7 +245,8 @@ export async function uploadFilesToArDrive(
   return {
     results,
     driveId,
-    rootFolderId
+    rootFolderId,
+    driveKeyBase64: actualDriveKeyBase64
   };
 }
 

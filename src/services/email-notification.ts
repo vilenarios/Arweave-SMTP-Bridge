@@ -1,16 +1,43 @@
-import { createTransport } from 'nodemailer';
+import { createTransport, Transporter } from 'nodemailer';
 import { config } from '../config/env';
 import { createLogger } from '../config/logger';
+import { oauth2Service } from './oauth2-service';
 
 const logger = createLogger('email-notification');
 
-const transporter = createTransport({
-  service: 'gmail',
-  auth: {
-    user: config.EMAIL_USER,
-    pass: config.EMAIL_PASSWORD,
-  },
-});
+/**
+ * Create SMTP transporter with appropriate authentication
+ * Uses OAuth2 if configured, otherwise falls back to password
+ */
+async function getTransporter(): Promise<Transporter> {
+  let authConfig: any;
+
+  if (oauth2Service.isOAuth2Configured()) {
+    logger.debug('Creating SMTP transporter with OAuth2');
+    const accessToken = await oauth2Service.getAccessToken();
+    authConfig = {
+      type: 'OAuth2',
+      user: config.EMAIL_USER,
+      accessToken,
+    };
+  } else {
+    logger.debug('Creating SMTP transporter with password');
+    authConfig = {
+      user: config.EMAIL_USER,
+      pass: config.EMAIL_PASSWORD,
+    };
+  }
+
+  return createTransport({
+    host: 'smtp.office365.com',
+    port: 587,
+    secure: false, // Use STARTTLS
+    auth: authConfig,
+    tls: {
+      rejectUnauthorized: true
+    }
+  });
+}
 
 export interface UploadedFile {
   fileName: string;
@@ -34,65 +61,181 @@ export interface UsageSummary {
 }
 
 /**
+ * Base email template with ArDrive branding and dark mode support
+ * Meets WCAG AA accessibility standards
+ */
+function getEmailTemplate(content: string): string {
+  return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <meta name="supported-color-schemes" content="light dark">
+  <style>
+    /* Client-specific styles */
+    body { margin: 0; padding: 0; width: 100% !important; -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    img { border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+    table { border-collapse: collapse; mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+
+    /* Dark mode support */
+    @media (prefers-color-scheme: dark) {
+      .email-container { background-color: #0A0B09 !important; }
+      .email-body { background-color: #0A0B09 !important; color: #FFFFFF !important; }
+      .text-primary { color: #FFFFFF !important; }
+      .text-secondary { color: #CECECE !important; }
+      .bg-light { background-color: #1A1B19 !important; }
+      .bg-section { background-color: #1A1B19 !important; border-color: #344955 !important; }
+      .bg-warning { background-color: #4D080C !important; border-color: #FE0230 !important; }
+      .bg-info { background-color: #1A1B19 !important; border-color: #344955 !important; }
+      .border-grey { border-color: #344955 !important; }
+      .link { color: #FE0230 !important; }
+    }
+  </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #F7F7F7;" class="email-body">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color: #F7F7F7;" class="email-container">
+    <tr>
+      <td align="center" style="padding: 40px 20px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" border="0" style="max-width: 600px; width: 100%; background-color: #FFFFFF; border-radius: 8px;" class="bg-light">
+          <tr>
+            <td style="padding: 40px 30px;">
+              ${content}
+
+              <!-- Footer -->
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-top: 40px; padding-top: 20px; border-top: 1px solid #EBEBEB;" class="border-grey">
+                <tr>
+                  <td align="center">
+                    <p style="margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.5; color: #666666;" class="text-secondary">
+                      ForwARd by <strong style="color: #FE0230;">ArDrive</strong>
+                    </p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+  `.trim();
+}
+
+/**
  * Send confirmation email after successful upload
  */
 export async function sendUploadConfirmation(
   to: string,
   emlFile: EmlFileInfo,
   emailSubject: string,
-  usage: UsageSummary
+  usage: UsageSummary,
+  driveType: 'private' | 'public' = 'private'
 ): Promise<void> {
   try {
     const subjectDisplay = emailSubject || 'No Subject';
 
-    // Usage summary
-    const usageCostText = usage.costThisMonth > 0
-      ? `<p style="margin: 8px 0 0 0;">Cost this month: <strong>$${usage.costThisMonth.toFixed(2)}</strong></p>`
+    // Build file URL based on drive type
+    const fileUrl = driveType === 'private'
+      ? `https://app.ardrive.io/#/file/${emlFile.entityId}/view?fileKey=${emlFile.fileKey}`
+      : `https://app.ardrive.io/#/file/${emlFile.entityId}/view`;
+
+    // Public drive warning
+    const publicWarning = driveType === 'public'
+      ? `<tr><td style="padding: 12px; background-color: #FFF3CD; border: 1px solid #FFE69C; border-radius: 6px; margin-bottom: 16px;"><p style="margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #856404;"><strong>⚠️ PUBLIC FILE:</strong> This file is publicly viewable by anyone with the link.</p></td></tr>`
       : '';
 
-    const htmlBody = `
-      <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; color: #333;">
-        <div style="text-align: center; margin-bottom: 30px;">
-          <h1 style="color: #000; font-weight: 300; margin: 0; font-size: 28px;">📬 Email Archived</h1>
-          <p style="color: #666; margin-top: 8px; font-size: 16px;">
-            "${subjectDisplay}"
-          </p>
-        </div>
+    // Usage cost text
+    const usageCostHtml = usage.costThisMonth > 0
+      ? `<tr><td style="padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary"><strong>Cost this month:</strong> $${usage.costThisMonth.toFixed(2)}</td></tr>`
+      : '';
 
-        <div style="margin-bottom: 30px;">
-          <h2 style="margin: 0 0 15px 0; font-size: 18px; color: #333;">📧 Complete Email Archive</h2>
-          <div style="background-color: #f7f9fc; padding: 15px; border-radius: 8px;">
-            <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>${emlFile.fileName}</strong></p>
-            <p style="margin: 0 0 10px 0; font-size: 13px; font-family: monospace; word-break: break-all;">
-              <a href="https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}" target="_blank" style="color: #0066cc; text-decoration: none; font-weight: 500;">
-                🔗 Download Email Archive (.eml)
+    const content = `
+      <!-- Header -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 30px;">
+        <tr>
+          <td>
+            <h1 style="margin: 0 0 8px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 24px; font-weight: 600; line-height: 1.3; color: rgba(0,0,0,0.87);" class="text-primary">
+              Email Archived Successfully
+            </h1>
+            <p style="margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.5; color: #666666;" class="text-secondary">
+              "${subjectDisplay}"
+            </p>
+          </td>
+        </tr>
+      </table>
+
+      <!-- Public Drive Warning -->
+      ${publicWarning}
+
+      <!-- Email Archive Section -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px;">
+        <tr>
+          <td>
+            <h2 style="margin: 0 0 12px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 16px; font-weight: 600; line-height: 1.3; color: rgba(0,0,0,0.87);" class="text-primary">
+              Complete Email Archive
+            </h2>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding: 16px; background-color: #F7F7F7; border-radius: 6px; border-left: 3px solid #FE0230;" class="bg-section">
+            <p style="margin: 0 0 12px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+              ${emlFile.fileName}
+            </p>
+            <p style="margin: 0 0 12px 0;">
+              <a href="https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}"
+                 style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 500; line-height: 1.5; color: #D31721; text-decoration: underline;"
+                 class="link">
+                Download Email Archive (.eml)
               </a>
             </p>
-            <p style="margin: 10px 0 0 0; font-size: 12px; color: #666; line-height: 1.5;">
-              <em>This .eml file contains your complete email including all attachments. Import it into any email client (Gmail, Outlook, Thunderbird, etc.) to access everything.</em>
+            <p style="margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 13px; line-height: 1.5; color: #666666;" class="text-secondary">
+              This .eml file contains your complete email including all attachments. Import it into any email client (Gmail, Outlook, Thunderbird, etc.) to access everything.
             </p>
-          </div>
-        </div>
+          </td>
+        </tr>
+      </table>
 
-        <div style="background-color: #f0f0f0; padding: 15px; border-radius: 8px; margin-top: 30px;">
-          <p style="margin: 0; font-size: 14px; color: #666;"><strong>Usage This Month:</strong></p>
-          <p style="margin: 8px 0 0 0;">Emails: <strong>${usage.uploadsThisMonth}</strong> (${usage.freeEmailsUsed} free, ${usage.paidEmailsThisMonth} paid)</p>
-          <p style="margin: 8px 0 0 0;">Free emails remaining: <strong>${usage.freeEmailsRemaining}</strong></p>
-          ${usageCostText}
-        </div>
-
-        <p style="color: #999; font-size: 13px; text-align: center; margin-top: 30px;">
-          Thank you for using ForwARd by ArDrive
-        </p>
-      </div>
+      <!-- Usage Summary -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="padding: 16px; background-color: #F7F7F7; border-radius: 6px;" class="bg-section">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="padding-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  Usage This Month
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  <strong>Emails:</strong> ${usage.uploadsThisMonth} (${usage.freeEmailsUsed} free, ${usage.paidEmailsThisMonth} paid)
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  <strong>Free emails remaining:</strong> ${usage.freeEmailsRemaining}
+                </td>
+              </tr>
+              ${usageCostHtml}
+            </table>
+          </td>
+        </tr>
+      </table>
     `;
 
-    const textBody = `
-📬 Email Archived: "${subjectDisplay}"
+    const htmlBody = getEmailTemplate(content);
 
-📧 Complete Email Archive:
+    const textBody = `
+Email Archived Successfully
+
+"${subjectDisplay}"
+
+${driveType === 'public' ? '⚠️ PUBLIC FILE: This file is publicly viewable by anyone with the link.\n\n' : ''}Complete Email Archive:
 ${emlFile.fileName}
-🔗 https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}
+
+Download: https://app.ardrive.io/#/file/${emlFile.entityId}/view${emlFile.fileKey ? `?fileKey=${emlFile.fileKey}` : ''}
 
 This .eml file contains your complete email including all attachments.
 Import it into any email client (Gmail, Outlook, Thunderbird, etc.) to access everything.
@@ -108,12 +251,21 @@ ${usage.costThisMonth > 0 ? `- Cost: $${usage.costThisMonth.toFixed(2)}` : ''}
 ForwARd by ArDrive
     `.trim();
 
+    const transporter = await getTransporter();
     await transporter.sendMail({
-      from: config.EMAIL_USER,
+      from: `ForwARd <${config.EMAIL_USER}>`,
       to,
+      replyTo: config.EMAIL_USER,
       subject: `Email archived: "${subjectDisplay}"`,
       text: textBody,
       html: htmlBody,
+      headers: {
+        'X-Mailer': 'ForwARd by ArDrive',
+        'X-Priority': '3',
+        'Importance': 'normal',
+        'List-Unsubscribe': `<mailto:${config.EMAIL_USER}?subject=unsubscribe>`,
+        'Precedence': 'bulk'
+      }
     });
 
     logger.info({ to }, 'Confirmation email sent');
@@ -129,122 +281,221 @@ ForwARd by ArDrive
 export async function sendDriveWelcomeEmail(
   to: string,
   driveId: string,
-  driveKeyBase64: string,
+  driveType: 'private' | 'public',
+  driveKeyBase64: string | undefined,
   userEmail: string,
   walletAddress?: string
 ): Promise<void> {
   try {
     // Drive link with name parameter (ArDrive keys are already base64url encoded, don't encode again)
     const driveName = encodeURIComponent(userEmail);
-    const driveLink = `https://app.ardrive.io/#/drives/${driveId}?name=${driveName}&driveKey=${driveKeyBase64}`;
+    const driveLink = driveType === 'private' && driveKeyBase64
+      ? `https://app.ardrive.io/#/drives/${driveId}?name=${driveName}&driveKey=${driveKeyBase64}`
+      : `https://app.ardrive.io/#/drives/${driveId}?name=${driveName}`;
 
-    // Wallet address section (only show in multi-wallet mode)
-    const walletSection = walletAddress ? `
-          <p style="margin: 0 0 10px 0; font-size: 14px; color: #666; font-family: monospace;">
-            <strong>Wallet Address:</strong> ${walletAddress}
-          </p>
+    // Drive type labels
+    const driveTypeLabel = driveType === 'private' ? 'Private' : 'Public';
+    const driveTypeDescription = driveType === 'private'
+      ? 'encrypted, permanent storage'
+      : 'public, permanent storage';
+
+    // Public warning banner (shown for public drives)
+    const publicWarningHtml = driveType === 'public' ? `
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px;">
+        <tr>
+          <td style="padding: 16px; background-color: #FFF3CD; border-radius: 6px; border-left: 3px solid #FFE69C;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="padding-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: #856404;">
+                  ⚠️ Public Drive Warning
+                </td>
+              </tr>
+              <tr>
+                <td style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #856404;">
+                  This is a PUBLIC drive. All files uploaded here are publicly viewable by anyone. Do not upload sensitive or private information.
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     ` : '';
 
-    const htmlBody = `
-      <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; color: #333;">
-        <div style="text-align: center; margin-bottom: 30px;">
-          <h1 style="color: #000; font-weight: 300; margin: 0; font-size: 28px;">🎉 Your Private Drive is Ready!</h1>
-          <p style="color: #666; margin-top: 8px; font-size: 16px;">
-            Welcome to ForwARd - Your Personal Email Archive
-          </p>
-        </div>
+    // Security warning (only shown for private drives)
+    const securityWarningHtml = driveType === 'private' ? `
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px;">
+        <tr>
+          <td style="padding: 16px; background-color: #FCF9FA; border-radius: 6px; border-left: 3px solid #C0151E;" class="bg-warning">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="padding-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  Important Security Notice
+                </td>
+              </tr>
+              <tr>
+                <td style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #666666;" class="text-secondary">
+                  • This link contains your drive key - keep it secure<br>
+                  • Anyone with this link can access your entire email archive<br>
+                  • Save it in a password manager or secure location<br>
+                  • Future emails will contain individual file links (not the master drive key)
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+    ` : '';
 
-        <div style="background-color: #f7f9fc; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
-          <p style="margin: 0 0 10px 0; font-size: 16px;">
-            <strong>Your Private Drive:</strong> ${userEmail}
-          </p>
-          <p style="margin: 0 0 10px 0; font-size: 14px; color: #666; font-family: monospace;">
-            <strong>Drive ID:</strong> ${driveId}
-          </p>
-          ${walletSection}
-          <p style="margin: 0 0 15px 0; font-size: 14px; color: #666;">
-            All your emails and attachments will be archived in this encrypted, permanent storage drive on Arweave.
-          </p>
-          <div style="text-align: center; margin: 20px 0;">
-            <a href="${driveLink}" style="background-color: #000; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px; display: inline-block; font-weight: 500;">
-              🔗 Open Your Drive
-            </a>
-          </div>
-        </div>
+    // Wallet address section (only show in multi-wallet mode)
+    const walletHtml = walletAddress ? `
+      <tr>
+        <td style="padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #666666; font-family: 'Courier New', monospace;" class="text-secondary">
+          <strong>Wallet Address:</strong> ${walletAddress}
+        </td>
+      </tr>
+    ` : '';
 
-        <div style="background-color: #fffacd; padding: 20px; border-radius: 8px; border-left: 4px solid #f39c12; margin-bottom: 20px;">
-          <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>⏱️ Indexing Delay:</strong></p>
-          <p style="margin: 0; font-size: 14px; color: #666;">
-            New files may take up to <strong>10 minutes</strong> to appear in ArDrive after upload. This is normal behavior for the Arweave network's indexing process.
-          </p>
-        </div>
+    const content = `
+      <!-- Header -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 30px;">
+        <tr>
+          <td>
+            <h1 style="margin: 0 0 8px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 24px; font-weight: 600; line-height: 1.3; color: rgba(0,0,0,0.87);" class="text-primary">
+              Your ${driveTypeLabel} Drive is Ready
+            </h1>
+            <p style="margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.5; color: #666666;" class="text-secondary">
+              Welcome to ForwARd - Your ${driveTypeLabel} Email Archive
+            </p>
+          </td>
+        </tr>
+      </table>
 
-        <div style="background-color: #fff9f9; padding: 20px; border-radius: 8px; border-left: 4px solid #e74c3c; margin-bottom: 30px;">
-          <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>⚠️ Important Security Notice:</strong></p>
-          <ul style="margin: 0; padding-left: 20px; font-size: 14px; color: #666;">
-            <li>This link contains your drive key - keep it secure!</li>
-            <li>Anyone with this link can access your entire email archive</li>
-            <li>Save it in a password manager or secure location</li>
-            <li>Future emails will contain individual file links (not the master drive key)</li>
-          </ul>
-        </div>
+      <!-- Public Drive Warning -->
+      ${publicWarningHtml}
 
-        <div style="background-color: #f0f0f0; padding: 15px; border-radius: 8px;">
-          <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>How It Works:</strong></p>
-          <ul style="margin: 0; padding-left: 20px; font-size: 14px; color: #666;">
-            <li>Send emails with attachments to ${config.EMAIL_USER}</li>
-            <li>Your emails are organized by date in folders (Year/Month/Email)</li>
-            <li>Each email is saved as .eml file (importable to any email client)</li>
-            <li>Get 10 free emails per month, then $0.10 per email</li>
-          </ul>
-        </div>
+      <!-- Drive Details -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px;">
+        <tr>
+          <td style="padding: 20px; background-color: #F7F7F7; border-radius: 6px; border-left: 3px solid #FE0230;" class="bg-section">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="padding-bottom: 12px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  Your ${driveTypeLabel} Drive: ${userEmail}
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #666666; font-family: 'Courier New', monospace;" class="text-secondary">
+                  <strong>Drive ID:</strong> ${driveId}
+                </td>
+              </tr>
+              ${walletHtml}
+              <tr>
+                <td style="padding: 16px 0 12px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #666666;" class="text-secondary">
+                  All your emails and attachments will be archived in this ${driveTypeDescription} drive on Arweave.
+                </td>
+              </tr>
+              <tr>
+                <td align="center" style="padding-top: 8px;">
+                  <a href="${driveLink}"
+                     style="display: inline-block; padding: 12px 32px; background-color: #FE0230; color: #FFFFFF; text-decoration: none; border-radius: 4px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; line-height: 1.5;">
+                    Open Your Drive
+                  </a>
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
 
-        <p style="color: #999; font-size: 13px; text-align: center; margin-top: 30px;">
-          Thank you for using ForwARd by ArDrive
-        </p>
-      </div>
+      <!-- Indexing Notice -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">
+        <tr>
+          <td style="padding: 16px; background-color: #FCF9FA; border-radius: 6px; border-left: 3px solid #FE0230;" class="bg-info">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="padding-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  Indexing Delay
+                </td>
+              </tr>
+              <tr>
+                <td style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #666666;" class="text-secondary">
+                  New files may take up to 10 minutes to appear in ArDrive after upload. This is normal behavior for the Arweave network's indexing process.
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
+
+      <!-- Security Warning (Private drives only) -->
+      ${securityWarningHtml}
+
+      <!-- How It Works -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="padding: 16px; background-color: #F7F7F7; border-radius: 6px;" class="bg-section">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="padding-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  How It Works
+                </td>
+              </tr>
+              <tr>
+                <td style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #666666;" class="text-secondary">
+                  • Send emails to <strong>${driveType === 'public' ? 'public-preserve@ardrive.io' : 'preserve@ardrive.io or private-preserve@ardrive.io'}</strong><br>
+                  • Organized by date (Year/Month), saved as .eml files<br>
+                  • 10 free emails/month, then $0.10/email
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     `;
 
+    const htmlBody = getEmailTemplate(content);
+
     const textBody = `
-🎉 Your Private Drive is Ready!
+Your ${driveTypeLabel} Drive is Ready
 
-Welcome to ForwARd - Your Personal Email Archive
+Welcome to ForwARd - Your ${driveTypeLabel} Email Archive
 
-Your Private Drive: ${userEmail}
+${driveType === 'public' ? '⚠️ PUBLIC DRIVE WARNING:\nThis is a PUBLIC drive. All files uploaded here are publicly viewable by anyone. Do not upload sensitive or private information.\n\n' : ''}Your ${driveTypeLabel} Drive: ${userEmail}
 Drive ID: ${driveId}
+${walletAddress ? `Wallet Address: ${walletAddress}` : ''}
 
-All your emails and attachments will be archived in this encrypted, permanent storage drive on Arweave.
+All your emails and attachments will be archived in this ${driveTypeDescription} drive on Arweave.
 
-🔗 Open Your Drive: ${driveLink}
+Open Your Drive: ${driveLink}
 
-⏱️ INDEXING DELAY:
+INDEXING DELAY:
 New files may take up to 10 minutes to appear in ArDrive after upload. This is normal behavior for the Arweave network's indexing process.
 
-⚠️ IMPORTANT SECURITY NOTICE:
+${driveType === 'private' ? `IMPORTANT SECURITY NOTICE:
 - This link contains your drive key - keep it secure!
 - Anyone with this link can access your entire email archive
 - Save it in a password manager or secure location
 - Future emails will contain individual file links (not the master drive key)
 
-How It Works:
-- Send emails with attachments to ${config.EMAIL_USER}
-- Your emails are organized by date in folders (Year/Month/Email)
-- Each email is saved as .eml file (importable to any email client)
-- Get 10 free emails per month, then $0.10 per email
+` : ''}How It Works:
+- Send emails to ${driveType === 'public' ? 'public-preserve@ardrive.io' : 'preserve@ardrive.io or private-preserve@ardrive.io'}
+- Organized by date (Year/Month), saved as .eml files
+- 10 free emails/month, then $0.10/email
 
 ---
 ForwARd by ArDrive
     `.trim();
 
+    const transporter = await getTransporter();
     await transporter.sendMail({
       from: config.EMAIL_USER,
       to,
-      subject: '🎉 Your ForwARd Private Drive is Ready!',
+      subject: `Your ForwARd ${driveTypeLabel} Drive is Ready`,
       text: textBody,
       html: htmlBody,
     });
 
-    logger.info({ to, driveId }, 'Welcome email sent');
+    logger.info({ to, driveId, driveType }, 'Welcome email sent');
   } catch (error) {
     logger.error({ error, to }, 'Failed to send welcome email');
     throw error;
@@ -263,47 +514,77 @@ export async function sendUploadErrorEmail(
   try {
     const subjectDisplay = subject || 'No Subject';
 
-    const htmlBody = `
-      <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; color: #333;">
-        <div style="text-align: center; margin-bottom: 30px;">
-          <h1 style="color: #e74c3c; font-weight: 300; margin: 0; font-size: 28px;">❌ Email Archive Failed</h1>
-          <p style="color: #666; margin-top: 8px; font-size: 16px;">
-            Unable to archive your email
-          </p>
-        </div>
+    const content = `
+      <!-- Header -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 30px;">
+        <tr>
+          <td>
+            <h1 style="margin: 0 0 8px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 24px; font-weight: 600; line-height: 1.3; color: #C0151E;">
+              Email Archive Failed
+            </h1>
+            <p style="margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.5; color: #666666;" class="text-secondary">
+              Unable to archive your email
+            </p>
+          </td>
+        </tr>
+      </table>
 
-        <div style="background-color: #fff9f9; padding: 20px; border-radius: 8px; border-left: 4px solid #e74c3c; margin-bottom: 30px;">
-          <p style="margin: 0 0 10px 0; font-size: 16px;"><strong>Email:</strong> "${subjectDisplay}"</p>
-          <p style="margin: 0; font-size: 14px; color: #666;">
-            We attempted to upload your email ${retryCount} time${retryCount > 1 ? 's' : ''} but encountered an error.
-          </p>
-        </div>
+      <!-- Error Details -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 20px;">
+        <tr>
+          <td style="padding: 16px; background-color: #FCF9FA; border-radius: 6px; border-left: 3px solid #C0151E;" class="bg-warning">
+            <p style="margin: 0 0 12px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+              Email: "${subjectDisplay}"
+            </p>
+            <p style="margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: #666666;" class="text-secondary">
+              We attempted to upload your email ${retryCount} time${retryCount > 1 ? 's' : ''} but encountered an error.
+            </p>
+          </td>
+        </tr>
+      </table>
 
-        <div style="background-color: #f7f9fc; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
-          <p style="margin: 0 0 10px 0; font-size: 14px;"><strong>Error Details:</strong></p>
-          <p style="margin: 0; font-size: 13px; font-family: monospace; color: #e74c3c; word-break: break-word;">
-            ${errorMessage}
-          </p>
-        </div>
+      <!-- Technical Error -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px;">
+        <tr>
+          <td style="padding: 16px; background-color: #F7F7F7; border-radius: 6px;" class="bg-section">
+            <p style="margin: 0 0 8px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+              Error Details
+            </p>
+            <p style="margin: 0; font-family: 'Courier New', monospace; font-size: 13px; line-height: 1.5; color: #C0151E; word-break: break-word;">
+              ${errorMessage}
+            </p>
+          </td>
+        </tr>
+      </table>
 
-        <div style="background-color: #f0f0f0; padding: 20px; border-radius: 8px;">
-          <p style="margin: 0 0 15px 0; font-size: 14px;"><strong>What to do:</strong></p>
-          <ul style="margin: 0; padding-left: 20px; font-size: 14px; color: #666;">
-            <li>Try sending your email again</li>
-            <li>If you have large attachments, try splitting them into separate emails</li>
-            <li>Check that your email size is under 1GB</li>
-            <li>If the problem persists, contact support</li>
-          </ul>
-        </div>
-
-        <p style="color: #999; font-size: 13px; text-align: center; margin-top: 30px;">
-          ForwARd by ArDrive
-        </p>
-      </div>
+      <!-- Next Steps -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="padding: 16px; background-color: #F7F7F7; border-radius: 6px;" class="bg-section">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="padding-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  What to do
+                </td>
+              </tr>
+              <tr>
+                <td style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #666666;" class="text-secondary">
+                  • Try sending your email again<br>
+                  • If you have large attachments, try splitting them into separate emails<br>
+                  • Check that your email size is under 1GB<br>
+                  • If the problem persists, contact support
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+      </table>
     `;
 
+    const htmlBody = getEmailTemplate(content);
+
     const textBody = `
-❌ Email Archive Failed
+Email Archive Failed
 
 Email: "${subjectDisplay}"
 We attempted to upload your email ${retryCount} time${retryCount > 1 ? 's' : ''} but encountered an error.
@@ -321,10 +602,11 @@ What to do:
 ForwARd by ArDrive
     `.trim();
 
+    const transporter = await getTransporter();
     await transporter.sendMail({
       from: config.EMAIL_USER,
       to,
-      subject: `❌ Email archive failed: "${subjectDisplay}"`,
+      subject: `Email archive failed: "${subjectDisplay}"`,
       text: textBody,
       html: htmlBody,
     });
@@ -345,30 +627,69 @@ export async function sendUsageLimitEmail(
   usage: UsageSummary
 ): Promise<void> {
   try {
-    const htmlBody = `
-      <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 40px 20px; color: #333;">
-        <div style="text-align: center; margin-bottom: 30px;">
-          <h1 style="color: #000; font-weight: 300; margin: 0; font-size: 28px;">Upload Limit Reached</h1>
-          <p style="color: #666; margin-top: 8px; font-size: 16px;">Your free tier limit has been reached</p>
-        </div>
+    const usageCostHtml = usage.costThisMonth > 0
+      ? `<tr><td style="padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary"><strong>Cost:</strong> $${usage.costThisMonth.toFixed(2)}</td></tr>`
+      : '';
 
-        <div style="background-color: #fff9f9; padding: 20px; border-radius: 8px; border-left: 4px solid #e74c3c; margin-bottom: 30px;">
-          <p style="margin: 0; font-size: 16px;">${reason}</p>
-        </div>
+    const content = `
+      <!-- Header -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 30px;">
+        <tr>
+          <td>
+            <h1 style="margin: 0 0 8px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 24px; font-weight: 600; line-height: 1.3; color: rgba(0,0,0,0.87);" class="text-primary">
+              Upload Limit Reached
+            </h1>
+            <p style="margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.5; color: #666666;" class="text-secondary">
+              Your free tier limit has been reached
+            </p>
+          </td>
+        </tr>
+      </table>
 
-        <div style="background-color: #f0f0f0; padding: 15px; border-radius: 8px;">
-          <p style="margin: 0; font-size: 14px; color: #666;"><strong>Usage This Month:</strong></p>
-          <p style="margin: 8px 0 0 0;">Emails: <strong>${usage.uploadsThisMonth}</strong></p>
-          <p style="margin: 8px 0 0 0;">Free: ${usage.freeEmailsUsed} / ${config.FREE_EMAILS_PER_MONTH}</p>
-          <p style="margin: 8px 0 0 0;">Paid: ${usage.paidEmailsThisMonth}</p>
-          ${usage.costThisMonth > 0 ? `<p style="margin: 8px 0 0 0;">Cost: $${usage.costThisMonth.toFixed(2)}</p>` : ''}
-        </div>
+      <!-- Reason -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom: 24px;">
+        <tr>
+          <td style="padding: 16px; background-color: #FCF9FA; border-radius: 6px; border-left: 3px solid #C0151E;" class="bg-warning">
+            <p style="margin: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+              ${reason}
+            </p>
+          </td>
+        </tr>
+      </table>
 
-        <p style="color: #999; font-size: 13px; text-align: center; margin-top: 30px;">
-          ForwARd by ArDrive
-        </p>
-      </div>
+      <!-- Usage Summary -->
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+        <tr>
+          <td style="padding: 16px; background-color: #F7F7F7; border-radius: 6px;" class="bg-section">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+              <tr>
+                <td style="padding-bottom: 8px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; font-weight: 600; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  Usage This Month
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  <strong>Emails:</strong> ${usage.uploadsThisMonth}
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  <strong>Free:</strong> ${usage.freeEmailsUsed} / ${config.FREE_EMAILS_PER_MONTH}
+                </td>
+              </tr>
+              <tr>
+                <td style="padding: 4px 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(0,0,0,0.87);" class="text-primary">
+                  <strong>Paid:</strong> ${usage.paidEmailsThisMonth}
+                </td>
+              </tr>
+              ${usageCostHtml}
+            </table>
+          </td>
+        </tr>
+      </table>
     `;
+
+    const htmlBody = getEmailTemplate(content);
 
     const textBody = `
 Upload Limit Reached
@@ -385,6 +706,7 @@ ${usage.costThisMonth > 0 ? `- Cost: $${usage.costThisMonth.toFixed(2)}` : ''}
 ForwARd by ArDrive
     `.trim();
 
+    const transporter = await getTransporter();
     await transporter.sendMail({
       from: config.EMAIL_USER,
       to,

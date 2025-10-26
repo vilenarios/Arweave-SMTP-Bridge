@@ -10,10 +10,16 @@ const envSchema = z.object({
 
   // Email Configuration
   EMAIL_USER: z.string().email('EMAIL_USER must be a valid email address'),
-  EMAIL_PASSWORD: z.string().min(1, 'EMAIL_PASSWORD is required'),
+  EMAIL_PASSWORD: z.string().optional(), // Optional if using OAuth2
   EMAIL_HOST: z.string().default('imap.gmail.com'),
   EMAIL_PORT: z.coerce.number().int().positive().default(993),
   EMAIL_TLS: z.coerce.boolean().default(true),
+
+  // OAuth2 Configuration (optional, for Microsoft 365)
+  OAUTH_CLIENT_ID: z.string().optional(),
+  OAUTH_CLIENT_SECRET: z.string().optional(),
+  OAUTH_TENANT_ID: z.string().optional(),
+  OAUTH_REFRESH_TOKEN: z.string().optional(),
 
   // Arweave Configuration
   ARWEAVE_JWK_PATH: z.string().min(1, 'ARWEAVE_JWK_PATH is required')
@@ -53,7 +59,22 @@ const envSchema = z.object({
 
   // Optional: Sentry for error tracking
   SENTRY_DSN: z.string().url().optional(),
-});
+}).refine(
+  (data) => {
+    // Must have either EMAIL_PASSWORD or all OAuth2 credentials
+    const hasPassword = !!data.EMAIL_PASSWORD;
+    const hasOAuth = !!(
+      data.OAUTH_CLIENT_ID &&
+      data.OAUTH_CLIENT_SECRET &&
+      data.OAUTH_TENANT_ID &&
+      data.OAUTH_REFRESH_TOKEN
+    );
+    return hasPassword || hasOAuth;
+  },
+  {
+    message: 'Must provide either EMAIL_PASSWORD or all OAuth2 credentials (OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_TENANT_ID, OAUTH_REFRESH_TOKEN)',
+  }
+);
 
 export type Env = z.infer<typeof envSchema>;
 

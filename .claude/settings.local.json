@@ -28,7 +28,18 @@
       "Bash(pm2 logs:*)",
       "Bash(pm2 stop:*)",
       "Bash(pm2 start:*)",
-      "Bash(timeout 60 pm2 logs:*)"
+      "Bash(timeout 60 pm2 logs:*)",
+      "Bash(timeout 120 pm2 logs:*)",
+      "Bash(tee:*)",
+      "Bash(pm2 restart:*)",
+      "Bash(timeout 45 pm2 logs:*)",
+      "Bash(timeout 15 bun start:*)",
+      "Bash(timeout 15 pm2 logs:*)",
+      "Bash(timeout 10 bun start:*)",
+      "Bash(chmod:*)",
+      "Bash(bash:*)",
+      "Bash(pkill:*)",
+      "Bash(netstat:*)"
     ],
     "deny": [],
     "ask": []

@@ -17,6 +17,7 @@ data/
 *.db
 *.db-shm
 *.db-wal
+backups/
 
 # Logs
 logs/
@@ -48,6 +49,8 @@ build/
 # Testing
 coverage/
 .nyc_output/
+test-*.ts
+*-test.ts
 
 # OS
 Thumbs.db

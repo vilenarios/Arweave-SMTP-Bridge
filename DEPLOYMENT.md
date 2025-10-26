@@ -154,6 +154,110 @@ Copy these values into your `.env` file.
 
 ---
 
+## Step 4b: Microsoft 365 OAuth2 Setup (Optional)
+
+If using Microsoft 365 instead of Gmail, you'll need OAuth2 authentication (recommended over app passwords).
+
+### Azure AD App Registration
+
+1. Go to **Azure Portal** → **Azure Active Directory** → **App registrations**
+2. Click **+ New registration**
+3. Configure:
+   - **Name**: `ForwARd Email Service`
+   - **Supported account types**: Single tenant
+   - **Redirect URI**: Leave empty for now
+   - Click **Register**
+4. Save the **Application (client) ID** and **Directory (tenant) ID**
+
+### Configure API Permissions
+
+1. In your app, go to **API permissions**
+2. Click **+ Add a permission**
+3. Select **Microsoft Graph** → **Delegated permissions**
+4. Add these permissions:
+   - `IMAP.AccessAsUser.All`
+   - `SMTP.Send`
+   - `Mail.Read`
+   - `Mail.Send`
+   - `offline_access`
+5. Click **Grant admin consent** (blue button at top)
+
+### Create Client Secret
+
+1. Go to **Certificates & secrets**
+2. Click **+ New client secret**
+3. Description: `ForwARd OAuth Secret`
+4. Expires: `24 months`
+5. Click **Add**
+6. **IMMEDIATELY copy the "Value"** (long random string) - you can't retrieve it later!
+
+### Configure Authentication
+
+1. Go to **Authentication**
+2. Click **+ Add a platform** → **Web**
+3. Redirect URI: `http://localhost`
+4. Uncheck "ID tokens"
+5. Click **Configure**
+6. Scroll to **Advanced settings** → **Allow public client flows**
+7. Set to **Yes**
+8. Click **Save**
+
+### Generate OAuth2 Tokens
+
+Run the included token generator script:
+
+```bash
+# Update the script with your values
+nano get-oauth-token.ts
+
+# Find these lines (near line 8-9):
+const CLIENT_ID = 'YOUR_CLIENT_ID_HERE';
+const TENANT_ID = 'YOUR_TENANT_ID_HERE';
+
+# Replace with your actual Client ID and Tenant ID from Azure
+# Save and exit (Ctrl+X, Y, Enter)
+
+# Run the script
+bun run get-oauth-token.ts
+```
+
+The script will:
+1. Ask for your **Client Secret** (paste the Value you copied earlier)
+2. Give you a URL to open in your browser
+3. Prompt you to sign in as your M365 email address
+4. Show a "connection refused" error page (this is expected!)
+5. Ask you to paste the full URL from your browser's address bar
+6. Exchange the code for tokens
+7. Output your `.env` configuration
+
+### Update .env
+
+Add the OAuth2 credentials to your `.env` file (replace password auth):
+
+```bash
+# Microsoft 365 with OAuth2
+EMAIL_USER=preserve@ardrive.io
+EMAIL_HOST=outlook.office365.com
+EMAIL_PORT=993
+EMAIL_TLS=true
+
+# OAuth2 Configuration (comment out EMAIL_PASSWORD)
+OAUTH_CLIENT_ID="your-client-id"
+OAUTH_CLIENT_SECRET="your-client-secret"
+OAUTH_TENANT_ID="your-tenant-id"
+OAUTH_REFRESH_TOKEN="your-refresh-token"
+
+# EMAIL_PASSWORD is not needed with OAuth2
+```
+
+**Notes:**
+- Tokens refresh automatically every hour
+- More secure than app passwords
+- Works with MFA-enabled accounts
+- Complies with M365 security policies
+
+---
+
 ## Step 5: Upload Arweave Wallet
 
 **Important**: Keep your wallet secure!

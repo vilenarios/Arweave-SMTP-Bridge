@@ -8,14 +8,16 @@ import { config } from '../../config/env';
 import { createLogger } from '../../config/logger';
 import { getDb } from '../../database/db';
 import { processedEmails, uploads, driveFolders } from '../../database/schema';
-import { getOrCreateUser, createPrivateDriveForUser, markWelcomeEmailSent } from '../../services/user-service';
+import { getOrCreateUser, createPrivateDriveForUser, createDriveForUser, markWelcomeEmailSent } from '../../services/user-service';
 import { canUserUpload, recordUpload, getUsageSummary } from '../../services/usage-service';
-import { uploadFilesToArDrive, createFolderInDrive, uploadFilesToFolder, getDriveShareKey } from '../../storage/ardrive-storage';
+import { uploadFilesToArDrive, createFolderInDrive, uploadFilesToFolder } from '../../storage/ardrive-storage';
 import { sendUploadConfirmation, sendUsageLimitEmail, sendDriveWelcomeEmail, sendUploadErrorEmail } from '../../services/email-notification';
 import { type EmailJobData } from '../queue';
 import { generateDrivePassword } from '../../utils/crypto';
 import { getOrCreateUserWallet } from '../../services/wallet-service';
 import { ensureUserHasCredits } from '../../services/credit-service';
+import { oauth2Service } from '../../services/oauth2-service';
+import { verifyEmailAuthentication, shouldEnforceAuthentication } from '../../utils/email-security';
 
 const logger = createLogger('email-processor');
 
@@ -204,15 +206,29 @@ export class EmailProcessor {
   async start(): Promise<void> {
     logger.info('Starting email processor worker...');
 
+    // Determine authentication method
+    let authConfig: any;
+    if (oauth2Service.isOAuth2Configured()) {
+      logger.info('Email processor using OAuth2 authentication');
+      const accessToken = await oauth2Service.getAccessToken();
+      authConfig = {
+        user: config.EMAIL_USER,
+        accessToken,
+      };
+    } else {
+      logger.info('Email processor using password authentication');
+      authConfig = {
+        user: config.EMAIL_USER,
+        pass: config.EMAIL_PASSWORD,
+      };
+    }
+
     // Create IMAP client for fetching email bodies
     this.imapClient = new ImapFlow({
       host: config.EMAIL_HOST,
       port: config.EMAIL_PORT,
       secure: config.EMAIL_TLS,
-      auth: {
-        user: config.EMAIL_USER,
-        pass: config.EMAIL_PASSWORD,
-      },
+      auth: authConfig,
       logger: false,
     });
 
@@ -256,10 +272,10 @@ export class EmailProcessor {
   }
 
   private async processJob(job: Job<EmailJobData>): Promise<void> {
-    const { uid, folder } = job.data;
+    const { uid, folder, driveType } = job.data;
     const db = await getDb();
 
-    logger.info({ uid, folder, jobId: job.id, attemptsMade: job.attemptsMade }, 'Processing email...');
+    logger.info({ uid, folder, driveType, jobId: job.id, attemptsMade: job.attemptsMade }, 'Processing email...');
 
     const tempFiles: string[] = []; // Track all temp files for cleanup
     let userEmail: string | undefined;
@@ -291,10 +307,55 @@ export class EmailProcessor {
 
       logger.info({ uid, from, subject }, 'Email fetched');
 
-      // 2. Get or create user (validates allowlist)
-      const { user, privateDrive } = await getOrCreateUser(from);
+      // 1.5. Verify email authentication (DKIM/SPF) to prevent spoofing
+      if (shouldEnforceAuthentication()) {
+        const authResult = verifyEmailAuthentication(email, from);
 
-      logger.info({ userId: user.id, email: from }, 'User validated');
+        if (!authResult.isAuthenticated) {
+          const errorMsg = `Email failed authentication: ${authResult.failureReason}`;
+          logger.error(
+            {
+              uid,
+              from,
+              dkim: authResult.dkimPass,
+              spf: authResult.spfPass,
+              dmarc: authResult.dmarcPass,
+              reason: authResult.failureReason
+            },
+            errorMsg
+          );
+
+          // Mark as failed and reject
+          await db.update(processedEmails)
+            .set({
+              status: 'completed', // Don't retry spoofed emails
+              processedAt: new Date(),
+              errorMessage: `Authentication failed: ${authResult.failureReason}`,
+            })
+            .where(eq(processedEmails.uid, uid));
+
+          // Don't send notification to potential attacker
+          return;
+        }
+
+        logger.info(
+          {
+            uid,
+            from,
+            dkim: authResult.dkimPass,
+            spf: authResult.spfPass,
+            dmarc: authResult.dmarcPass
+          },
+          '✅ Email authentication verified'
+        );
+      } else {
+        logger.warn({ uid, from }, 'Email authentication check SKIPPED (development mode)');
+      }
+
+      // 2. Get or create user (validates allowlist)
+      const { user, drive } = await getOrCreateUser(from, driveType);
+
+      logger.info({ userId: user.id, email: from, driveType }, 'User validated');
 
       // 3. Check usage limits
       const { allowed, reason } = await canUserUpload(user.id);
@@ -348,34 +409,38 @@ export class EmailProcessor {
         logger.info({ uid, emlSize: emlFile.sizeBytes }, 'Email saved as .eml');
       }
 
-      // 6. Get or create private drive for user
-      let driveInfo = privateDrive;
+      // 6. Get or create drive for user (private or public based on driveType)
+      let driveInfo = drive;
       let isNewDrive = false;
 
       if (!driveInfo) {
         isNewDrive = true;
-        logger.info({ userId: user.id }, 'Creating private drive...');
+        logger.info({ userId: user.id, driveType }, `Creating ${driveType} drive...`);
 
-        const drivePassword = generateDrivePassword();
+        // For private drives, generate password. Public drives have no password.
+        const drivePassword = driveType === 'private' ? generateDrivePassword() : undefined;
 
-        // Create EMPTY drive first (no files)
-        const { driveId, rootFolderId } = await uploadFilesToArDrive(
+        // Create EMPTY drive first (no files) - returns ACTUAL drive key for private drives
+        const { driveId, rootFolderId, driveKeyBase64 } = await uploadFilesToArDrive(
           user.id,
           [],
           {
-            driveName: `${user.email}-private`,
+            driveName: `${user.email}-${driveType}`,
             drivePassword,
           }
         );
 
-        // Derive drive key for sharing
-        const driveKeyBase64 = await getDriveShareKey(driveId, drivePassword);
+        // For private drives, verify drive key was extracted
+        if (driveType === 'private' && !driveKeyBase64) {
+          throw new Error('Failed to extract drive key from private drive creation');
+        }
 
-        // Save drive info to database with drive key
-        await createPrivateDriveForUser(
+        // Save drive info to database
+        await createDriveForUser(
           user.id,
           driveId,
           rootFolderId,
+          driveType,
           drivePassword,
           driveKeyBase64
         );
@@ -384,34 +449,35 @@ export class EmailProcessor {
           id: (globalThis.crypto as any).randomUUID(),
           userId: user.id,
           driveId,
-          driveType: 'private' as const,
+          driveType,
           rootFolderId,
           drivePasswordEncrypted: '',
-          driveKeyBase64,
+          driveKeyBase64: driveKeyBase64 || null,
           welcomeEmailSent: false,
           createdAt: new Date(),
           drivePassword,
         };
 
-        logger.info({ userId: user.id, driveId, rootFolderId }, 'Private drive created');
+        logger.info({ userId: user.id, driveId, rootFolderId, driveType }, `${driveType} drive created`);
 
         // Wait for drive indexing (reduced from 10s to 6s)
-        logger.info({ driveId }, 'Waiting 6s for drive indexing');
+        logger.info({ driveId, driveType }, 'Waiting 6s for drive indexing');
         await new Promise(resolve => setTimeout(resolve, 6000));
       }
 
       // 7. Send welcome email if this is a new drive (only once)
-      if (isNewDrive && driveInfo.driveKeyBase64) {
-        logger.info({ userId: user.id }, 'Sending welcome email...');
+      if (isNewDrive) {
+        logger.info({ userId: user.id, driveType }, 'Sending welcome email...');
         await sendDriveWelcomeEmail(
           from,
           driveInfo.driveId,
-          driveInfo.driveKeyBase64,
+          driveType,
+          driveInfo.driveKeyBase64 || undefined,
           user.email,
           userWallet?.address // Include wallet address in multi mode
         );
-        await markWelcomeEmailSent(user.id);
-        logger.info({ userId: user.id }, 'Welcome email sent');
+        await markWelcomeEmailSent(user.id, driveType);
+        logger.info({ userId: user.id, driveType }, 'Welcome email sent');
       }
 
       // 8. Create folder hierarchy: Year/Month/Email
@@ -439,32 +505,15 @@ export class EmailProcessor {
         userWallet?.jwk
       );
 
-      // Create email folder: YYYY-MM-DD_HH-MM-SS_Subject
-      const timestamp = emailDate.toISOString().replace(/[:.]/g, '-').substring(0, 19);
-      const sanitizedSubject = subject ? sanitizeName(subject, 50) : 'No-Subject';
-      const emailFolderName = `${timestamp}_${sanitizedSubject}`;
-
-      logger.info({ emailFolderName }, 'Creating email folder');
-      const { folderId: emailFolderId } = await createFolderInDrive(
-        driveInfo.driveId,
-        emailFolderName,
-        monthFolderId,
-        driveInfo.drivePassword,
-        userWallet?.jwk // Pass user wallet in multi mode
-      );
-
-      logger.info({ emailFolderId }, 'Email folder created, waiting 6s for indexing');
-      await new Promise(resolve => setTimeout(resolve, 6000));
-
-      // 9. Upload .eml file to email folder
+      // 9. Upload .eml file directly to month folder (no separate email folder needed)
       if (!emlFile) {
         throw new Error('No .eml file to upload');
       }
 
-      logger.info('Uploading .eml file to email folder');
+      logger.info('Uploading .eml file to month folder');
       const uploadResults = await uploadFilesToFolder(
         driveInfo.driveId,
-        emailFolderId,
+        monthFolderId,
         [{
           filepath: emlFile.filepath,
           filename: emlFile.filename,
@@ -492,17 +541,17 @@ export class EmailProcessor {
         entityId: emlUploadResult.entityId,
         dataTxId: emlUploadResult.dataTxId || null,
         fileKey: emlUploadResult.fileKey || null,
-        emailFolderEntityId: emailFolderId,
+        emailFolderEntityId: monthFolderId, // Store month folder ID for organization
         completedAt: new Date(),
       });
 
       await recordUpload(user.id, emlFile.sizeBytes);
 
-      // 11. Update processedEmails with folder and .eml info
+      // 11. Update processedEmails with .eml info
       await db.update(processedEmails)
         .set({
-          folderEntityId: emailFolderId,
-          folderName: emailFolderName,
+          folderEntityId: monthFolderId, // Month folder where .eml is stored
+          folderName: `${year}-${String(month).padStart(2, '0')}`, // e.g., "2025-10"
           emlFileEntityId: emlUploadResult.entityId,
           emlFileKey: emlUploadResult.fileKey || null,
         })
@@ -521,10 +570,11 @@ export class EmailProcessor {
         from,
         emlInfo,
         subject || 'No Subject',
-        summary
+        summary,
+        driveType
       );
 
-      logger.info({ userId: user.id }, 'Confirmation email sent');
+      logger.info({ userId: user.id, driveType }, 'Confirmation email sent');
 
       // 14. Clean up temp files
       for (const filepath of tempFiles) {

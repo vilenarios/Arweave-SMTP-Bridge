@@ -1,14 +1,17 @@
+import http from 'http';
 import { config } from './src/config/env';
 import { createLogger } from './src/config/logger';
 import { getDb } from './src/database/db';
 import { IMAPService } from './src/services/imap-service';
 import { EmailProcessor } from './src/jobs/processors/email-processor';
 import { closeQueue } from './src/jobs/queue';
+import { startHealthServer, setImapHealthCheck } from './src/services/health-server';
 
 const logger = createLogger('main');
 
 let imapService: IMAPService | null = null;
 let emailProcessor: EmailProcessor | null = null;
+let healthServer: http.Server | null = null;
 let isShuttingDown = false;
 
 async function start(): Promise<void> {
@@ -31,6 +34,21 @@ async function start(): Promise<void> {
     imapService = new IMAPService();
     await imapService.start();
     logger.info('✅ IMAP service started');
+
+    // 4. Start health check server
+    logger.info('🏥 Starting health check server...');
+    const healthPort = process.env.HEALTH_PORT ? parseInt(process.env.HEALTH_PORT) : 3000;
+
+    // Register IMAP health check
+    setImapHealthCheck(async () => {
+      if (imapService) {
+        return await imapService.healthCheck();
+      }
+      return false;
+    });
+
+    healthServer = startHealthServer(healthPort);
+    logger.info(`✅ Health check server started on port ${healthPort}`);
 
     logger.info('');
     logger.info('🎉 ForwARd is running!');
@@ -59,7 +77,19 @@ async function shutdown(exitCode = 0): Promise<void> {
   logger.info('🛑 Shutting down gracefully...');
 
   try {
-    // Stop IMAP service first (stops new emails from being queued)
+    // Stop health server first (no longer report as healthy)
+    if (healthServer) {
+      logger.info('Stopping health server...');
+      await new Promise<void>((resolve) => {
+        healthServer!.close(() => {
+          logger.info('✅ Health server stopped');
+          resolve();
+        });
+      });
+      healthServer = null;
+    }
+
+    // Stop IMAP service (stops new emails from being queued)
     if (imapService) {
       logger.info('Stopping IMAP service...');
       await imapService.stop();

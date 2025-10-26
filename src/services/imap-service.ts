@@ -5,6 +5,7 @@ import { createLogger } from '../config/logger';
 import { getDb } from '../database/db';
 import { processedEmails } from '../database/schema';
 import { queueEmail } from '../jobs/queue';
+import { oauth2Service } from './oauth2-service';
 
 const logger = createLogger('imap');
 
@@ -51,14 +52,28 @@ export class IMAPService {
     try {
       logger.info({ host: config.EMAIL_HOST, user: config.EMAIL_USER }, 'Connecting to IMAP...');
 
+      // Determine authentication method
+      let authConfig: any;
+      if (oauth2Service.isOAuth2Configured()) {
+        logger.info('Using OAuth2 authentication');
+        const accessToken = await oauth2Service.getAccessToken();
+        authConfig = {
+          user: config.EMAIL_USER,
+          accessToken,
+        };
+      } else {
+        logger.info('Using password authentication');
+        authConfig = {
+          user: config.EMAIL_USER,
+          pass: config.EMAIL_PASSWORD,
+        };
+      }
+
       this.client = new ImapFlow({
         host: config.EMAIL_HOST,
         port: config.EMAIL_PORT,
         secure: config.EMAIL_TLS,
-        auth: {
-          user: config.EMAIL_USER,
-          pass: config.EMAIL_PASSWORD,
-        },
+        auth: authConfig,
         logger: false, // Disable ImapFlow's own logging
       });
 
@@ -155,8 +170,8 @@ export class IMAPService {
       const db = await getDb();
       const sinceDate = new Date(Date.now() - SEARCH_DAYS * 24 * 60 * 60 * 1000);
 
-      // Check both INBOX and Spam folders
-      const foldersToCheck = ['INBOX', '[Gmail]/Spam'];
+      // Check INBOX folder (and Gmail spam for Gmail accounts)
+      const foldersToCheck = config.EMAIL_HOST.includes('gmail') ? ['INBOX', '[Gmail]/Spam'] : ['INBOX'];
 
       for (const folder of foldersToCheck) {
         try {
@@ -203,8 +218,12 @@ export class IMAPService {
           const subject = message.envelope.subject || '(no subject)';
           const messageId = message.envelope.messageId || null;
 
+          // Determine drive type based on destination address
+          const to = message.envelope.to?.[0]?.address?.toLowerCase() || '';
+          const driveType = to.includes('public-preserve') ? 'public' : 'private';
+
           // Queue for processing
-          await queueEmail(uid, folder);
+          await queueEmail(uid, folder, driveType);
 
           // Record in database
           await db.insert(processedEmails).values({
@@ -218,7 +237,7 @@ export class IMAPService {
           // Mark as SEEN (prevents re-processing if app crashes)
           await this.client.messageFlagsAdd([uid], ['\\Seen']);
 
-          logger.info({ uid, from, subject, folder }, 'Email queued');
+          logger.info({ uid, from, subject, folder, driveType }, 'Email queued');
         }
       } finally {
         lock.release();

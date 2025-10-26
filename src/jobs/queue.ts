@@ -48,18 +48,20 @@ queueEvents.on('retrying', ({ jobId, attemptsMade }) => {
 export interface EmailJobData {
   uid: number; // IMAP UID
   folder: string; // IMAP folder (INBOX, [Gmail]/Spam, etc.)
+  driveType: 'private' | 'public'; // Drive type based on destination email address
   queuedAt: number; // Timestamp
 }
 
 // Helper function to add email to queue
-export async function queueEmail(uid: number, folder: string): Promise<void> {
+export async function queueEmail(uid: number, folder: string, driveType: 'private' | 'public' = 'private'): Promise<void> {
   await emailQueue.add('process-email', {
     uid,
     folder,
+    driveType,
     queuedAt: Date.now(),
   } as EmailJobData);
 
-  logger.info({ uid, folder }, 'Email queued for processing');
+  logger.info({ uid, folder, driveType }, 'Email queued for processing');
 }
 
 // Graceful shutdown
