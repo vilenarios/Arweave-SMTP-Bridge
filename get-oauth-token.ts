@@ -1,13 +1,21 @@
 /**
  * OAuth2 Token Generator for Microsoft 365
  * Run this once to get a refresh token
+ *
+ * IMPORTANT: Update these values with your own Azure AD app credentials
+ * OR set them via environment variables:
+ *   - OAUTH_CLIENT_ID
+ *   - OAUTH_TENANT_ID
+ *   - EMAIL_USER
  */
 
 import readline from 'readline';
 
-const CLIENT_ID = 'c1655696-2322-4fea-985c-2748a611c650';
-const TENANT_ID = '5a738dd0-40ca-461c-b7ed-dd8175841144';
-const EMAIL_ADDRESS = 'preserve@ardrive.io';
+// Replace these with your Azure AD app credentials
+// Or set via environment variables before running this script
+const CLIENT_ID = process.env.OAUTH_CLIENT_ID || 'YOUR_CLIENT_ID_HERE';
+const TENANT_ID = process.env.OAUTH_TENANT_ID || 'YOUR_TENANT_ID_HERE';
+const EMAIL_ADDRESS = process.env.EMAIL_USER || 'your-email@example.com';
 
 const SCOPES = [
   'https://outlook.office365.com/IMAP.AccessAsUser.All',
