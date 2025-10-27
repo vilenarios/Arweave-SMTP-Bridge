@@ -2,8 +2,33 @@ import http from 'http';
 import { createLogger } from '../config/logger';
 import { getDb } from '../database/db';
 import { emailQueue } from '../jobs/queue';
+import { sql } from 'drizzle-orm';
 
 const logger = createLogger('health-server');
+
+export interface HealthStats {
+  emails: {
+    total: number;
+    today: number;
+    successRate: string;
+    public: number;
+    private: number;
+    failed: number;
+  };
+  storage: {
+    totalFiles: number;
+    totalSizeGB: string;
+    averageFileSizeMB: string;
+  };
+  users: {
+    total: number;
+    active: number;
+  };
+  drives: {
+    private: number;
+    public: number;
+  };
+}
 
 export interface HealthStatus {
   status: 'healthy' | 'unhealthy' | 'degraded';
@@ -19,7 +44,13 @@ export interface HealthStatus {
     failed: number;
   };
   uptime: number;
+  stats?: HealthStats;
 }
+
+// Cache for stats (60 second TTL)
+let cachedStats: HealthStats | null = null;
+let cacheTime = 0;
+const CACHE_TTL = 60000; // 60 seconds
 
 /**
  * Check database connectivity
@@ -28,10 +59,13 @@ async function checkDatabase(): Promise<boolean> {
   try {
     const db = await getDb();
     // Simple query to check database is accessible
-    await db.execute('SELECT 1');
+    await db.all(sql`SELECT 1`);
     return true;
   } catch (error) {
-    logger.error({ error }, 'Database health check failed');
+    logger.error({
+      errorMessage: error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : undefined
+    }, 'Database health check failed');
     return false;
   }
 }
@@ -41,10 +75,14 @@ async function checkDatabase(): Promise<boolean> {
  */
 async function checkRedis(): Promise<boolean> {
   try {
-    const isReady = await emailQueue.isReady();
-    return isReady;
+    // Try to get queue count - if this works, Redis is accessible
+    await emailQueue.getWaitingCount();
+    return true;
   } catch (error) {
-    logger.error({ error }, 'Redis health check failed');
+    logger.error({
+      errorMessage: error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : undefined
+    }, 'Redis health check failed');
     return false;
   }
 }
@@ -68,6 +106,122 @@ async function getQueueStats(): Promise<{ waiting: number; active: number; faile
 }
 
 /**
+ * Get application statistics (cached for 60 seconds)
+ */
+async function getStats(): Promise<HealthStats> {
+  try {
+    const db = await getDb();
+
+    // All queries run in parallel for performance
+    const [
+      emailStats,
+      storageStats,
+      userStats,
+      driveStats
+    ] = await Promise.all([
+      // Email statistics
+      db.all(sql`
+        SELECT
+          COUNT(*) as total,
+          SUM(CASE WHEN DATE(queued_at) = DATE('now') THEN 1 ELSE 0 END) as today,
+          SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+          SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+        FROM processed_emails
+      `),
+
+      // Storage statistics
+      db.all(sql`
+        SELECT
+          COUNT(*) as total_files,
+          COALESCE(SUM(size_bytes), 0) as total_bytes,
+          COALESCE(AVG(size_bytes), 0) as avg_bytes
+        FROM uploads
+        WHERE status = 'completed'
+      `),
+
+      // User statistics
+      db.all(sql`
+        SELECT
+          COUNT(*) as total,
+          COUNT(CASE WHEN created_at >= datetime('now', '-30 days') THEN 1 END) as active
+        FROM users
+      `),
+
+      // Drive statistics
+      db.all(sql`
+        SELECT
+          SUM(CASE WHEN drive_type = 'private' THEN 1 ELSE 0 END) as private,
+          SUM(CASE WHEN drive_type = 'public' THEN 1 ELSE 0 END) as public
+        FROM user_drives
+      `)
+    ]);
+
+    const emailRow = emailStats[0] as any;
+    const storageRow = storageStats[0] as any;
+    const userRow = userStats[0] as any;
+    const driveRow = driveStats[0] as any;
+
+    const total = Number(emailRow.total) || 0;
+    const completed = Number(emailRow.completed) || 0;
+    const successRate = total > 0 ? ((completed / total) * 100).toFixed(1) : '0.0';
+
+    const totalBytes = Number(storageRow.total_bytes) || 0;
+    const avgBytes = Number(storageRow.avg_bytes) || 0;
+
+    return {
+      emails: {
+        total,
+        today: Number(emailRow.today) || 0,
+        successRate: `${successRate}%`,
+        public: 0, // We don't track this in processed_emails currently
+        private: 0, // We don't track this in processed_emails currently
+        failed: Number(emailRow.failed) || 0
+      },
+      storage: {
+        totalFiles: Number(storageRow.total_files) || 0,
+        totalSizeGB: (totalBytes / 1024 / 1024 / 1024).toFixed(2),
+        averageFileSizeMB: (avgBytes / 1024 / 1024).toFixed(2)
+      },
+      users: {
+        total: Number(userRow.total) || 0,
+        active: Number(userRow.active) || 0
+      },
+      drives: {
+        private: Number(driveRow.private) || 0,
+        public: Number(driveRow.public) || 0
+      }
+    };
+  } catch (error) {
+    logger.error({
+      errorMessage: error instanceof Error ? error.message : String(error),
+      errorStack: error instanceof Error ? error.stack : undefined
+    }, 'Failed to get stats');
+    // Return empty stats on error
+    return {
+      emails: { total: 0, today: 0, successRate: '0.0%', public: 0, private: 0, failed: 0 },
+      storage: { totalFiles: 0, totalSizeGB: '0.00', averageFileSizeMB: '0.00' },
+      users: { total: 0, active: 0 },
+      drives: { private: 0, public: 0 }
+    };
+  }
+}
+
+/**
+ * Get cached stats (or fetch if cache expired)
+ */
+async function getCachedStats(): Promise<HealthStats> {
+  const now = Date.now();
+
+  if (!cachedStats || (now - cacheTime) > CACHE_TTL) {
+    cachedStats = await getStats();
+    cacheTime = now;
+    logger.debug('Stats cache refreshed');
+  }
+
+  return cachedStats;
+}
+
+/**
  * IMAP health check interface
  * To be injected by main application
  */
@@ -81,10 +235,11 @@ export function setImapHealthCheck(check: () => Promise<boolean>): void {
  * Get overall health status
  */
 export async function getHealthStatus(): Promise<HealthStatus> {
-  const [dbHealthy, redisHealthy, queueStats] = await Promise.all([
+  const [dbHealthy, redisHealthy, queueStats, stats] = await Promise.all([
     checkDatabase(),
     checkRedis(),
     getQueueStats(),
+    getCachedStats(),
   ]);
 
   const imapHealthy = imapHealthCheck ? await imapHealthCheck() : undefined;
@@ -102,6 +257,7 @@ export async function getHealthStatus(): Promise<HealthStatus> {
     },
     queue: queueStats,
     uptime: process.uptime(),
+    stats,
   };
 
   return status;
